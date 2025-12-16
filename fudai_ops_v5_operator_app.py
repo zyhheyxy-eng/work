@@ -504,8 +504,11 @@ class ManualAddDialog(tk.Toplevel):
 
         btns = ttk.Frame(self, padding=12)
         btns.pack(fill="x")
-        ttk.Button(btns, text="确认添加", command=self.confirm).pack(side="left")
-        ttk.Button(btns, text="取消", command=self.destroy).pack(side="left", padx=8)
+        ttk.Label(btns, text="选择商品和等级后，点击确认添加即可。", foreground="#6b7280").pack(side="left")
+
+        self.btn_confirm = ttk.Button(btns, text="确认添加到当前福袋", command=self.confirm)
+        self.btn_confirm.pack(side="right")
+        ttk.Button(btns, text="取消", command=self.destroy).pack(side="right", padx=8)
 
         self.refresh()
 
