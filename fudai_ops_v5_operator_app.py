@@ -480,6 +480,10 @@ class ManualAddDialog(tk.Toplevel):
         cb.current(4)
         cb.bind("<<ComboboxSelected>>", lambda e: self._refresh_cost_check())
 
+        # 把「确认添加」放在分配等级旁，方便点选后立即操作
+        self.btn_confirm = ttk.Button(top, text="确认添加到当前福袋", command=self.confirm)
+        self.btn_confirm.grid(row=0, column=4, sticky="w", padx=(12, 0))
+
         ttk.Label(top, text="库存报警值：").grid(row=1, column=0, sticky="w", pady=(10, 0))
         self.v_alarm = tk.StringVar(value=str(DEFAULT_ALARM))
         ttk.Entry(top, textvariable=self.v_alarm, width=10).grid(row=1, column=1, sticky="w", pady=(10, 0))
@@ -487,7 +491,7 @@ class ManualAddDialog(tk.Toplevel):
         self.lbl_cost_check = ttk.Label(top, text="成本校验：—", foreground="#9ca3af")
         self.lbl_cost_check.grid(row=1, column=2, columnspan=2, sticky="w", padx=(16, 0), pady=(10, 0))
 
-        ttk.Label(top, text="（可按 Ctrl/Shift 多选后点击下方“确认添加”）", foreground="#6b7280").grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
+        ttk.Label(top, text="（可按 Ctrl/Shift 多选后点击旁边“确认添加”）", foreground="#6b7280").grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
         self.tree = ttk.Treeview(self, columns=("name", "price", "cost", "stock", "status"), show="headings", height=14, selectmode="extended")
         for c, t, w in [
@@ -504,10 +508,7 @@ class ManualAddDialog(tk.Toplevel):
 
         btns = ttk.Frame(self, padding=12)
         btns.pack(fill="x")
-        ttk.Label(btns, text="选择商品和等级后，点击确认添加即可。", foreground="#6b7280").pack(side="left")
-
-        self.btn_confirm = ttk.Button(btns, text="确认添加到当前福袋", command=self.confirm)
-        self.btn_confirm.pack(side="right")
+        ttk.Label(btns, text="选择商品和等级后，点击上方“确认添加”即可。", foreground="#6b7280").pack(side="left")
         ttk.Button(btns, text="取消", command=self.destroy).pack(side="right", padx=8)
 
         self.refresh()
