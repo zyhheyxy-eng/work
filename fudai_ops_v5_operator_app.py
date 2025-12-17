@@ -888,7 +888,7 @@ class ConfigPopup(tk.Toplevel):
         else:
             self.btn_online.configure(state="disabled")
             self.btn_force.configure(state="normal")
-            self.note.configure(text="预计利润率未达标：仅可强制上线并通知上级。")
+            self.note.configure(text="预计利润率未达标：仅可强制上线（需记录并通知上级审批）。")
 
     def _online(self):
         bag = self.bag
@@ -1089,6 +1089,8 @@ class PageConfig(ttk.Frame):
 
         self.btn_save_top = ttk.Button(self, text="保存并返回列表", command=self.on_save)
         self.btn_save_top.place(relx=1.0, y=10, x=-10, anchor="ne")
+        self.btn_back_top = ttk.Button(self, text="返回列表", command=lambda: self.app.show("PageBagList"))
+        self.btn_back_top.place(relx=1.0, y=40, x=-10, anchor="ne")
 
         # vars
         self.v_name = tk.StringVar(value="")
@@ -1142,7 +1144,7 @@ class PageConfig(ttk.Frame):
         self.btns.grid(row=2, column=0, columnspan=2, sticky="ew", pady=12)
 
         self.btn_filter = ttk.Button(self.btns, text="筛选商品（去选品）", command=self.on_filter)
-        self.btn_filter.pack(side="left", padx=8)
+        self.btn_filter.pack(side="right", padx=8)
 
         for var in [self.v_P, self.v_g, self.v_d, self.v_q]:
             var.trace_add("write", lambda *_: self.refresh_expected_cost())
@@ -1197,6 +1199,7 @@ class PageConfig(ttk.Frame):
 
         # buttons
         self.btn_save_top.configure(state=("disabled" if self._readonly else "normal"))
+        self.btn_back_top.configure(state="normal")
         self.btn_filter.configure(state=("disabled" if self._readonly else "normal"))
 
     def _build_basic(self, parent):
