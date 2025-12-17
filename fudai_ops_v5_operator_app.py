@@ -720,45 +720,92 @@ class ReminderSettingsDialog(tk.Toplevel):
         messagebox.showinfo("已保存", "提醒/通知设置已保存（占位交互）。")
         self.destroy()
 
-class SnapshotDialog(tk.Toplevel):
-    """只读配置快照，可直接在此上线/强制上线。"""
-    def __init__(self, parent: tk.Tk, app: App, bag: BagState, allow_actions: bool = True, on_state_change=None):
+class ConfigPopup(tk.Toplevel):
+    """参数配置页弹窗（只读），内含上线/强制上线操作。"""
+    def __init__(self, parent: tk.Tk, app: App, bag: BagState, on_state_change=None):
         super().__init__(parent)
         self.app = app
         self.bag = bag
-        self.allow_actions = allow_actions
         self.on_state_change = on_state_change
-        self.title("当前配置（只读）")
-        self.geometry("920x720")
+        self.title("参数配置（只读）")
+        self.geometry("960x760")
         self.resizable(True, True)
 
-        txt = tk.Text(self, wrap="word")
-        txt.pack(fill="both", expand=True, padx=12, pady=(12, 8))
-        txt.insert("1.0", app.build_config_snapshot(bag))
-        txt.configure(state="disabled")
+        ttk.Button(self, text="关闭", command=self.destroy).place(relx=1.0, y=8, x=-10, anchor="ne")
 
-        self.btn_close = ttk.Button(self, text="关闭", command=self.destroy)
-        self.btn_close.place(relx=1.0, y=8, x=-10, anchor="ne")
+        wrapper = ttk.Frame(self, padding=12)
+        wrapper.pack(fill="both", expand=True)
+        wrapper.columnconfigure(0, weight=1)
+        wrapper.columnconfigure(1, weight=1)
 
+        cfg = bag.cfg
+        selected = [it for it in app.catalog if it.id in bag.selected_ids]
+        probs = bag.final_probs or {}
+        pr = app._profit_rate(cfg, selected, probs) if probs else None
+        P_eff = calc_p_eff(cfg.P, cfg.d, cfg.q)
+
+        # 基础配置区域（类似参数配置页）
+        base = ttk.Labelframe(wrapper, text="基础配置", padding=10)
+        base.grid(row=0, column=0, sticky="nsew", padx=(0, 8), pady=(0, 8))
+        info = [
+            ("福袋ID", bag.bag_id),
+            ("福袋名称", cfg.bag_name),
+            ("上下架时间", f"{fmt_dt(cfg.up_time)} ~ {fmt_dt(cfg.down_time)}"),
+            ("单抽标价 P", f"{cfg.P:.2f} 元"),
+            ("目标利润率 g", f"{cfg.g*100:.2f}%"),
+            ("十连折扣系数 d", f"{cfg.d:.2f}"),
+            ("十连占比 q", f"{cfg.q*100:.0f}%"),
+            ("售价筛选比例", f"{cfg.price_ratio*100:.0f}%"),
+            ("等效单抽收入 P_eff", f"{P_eff:.2f} 元"),
+            ("当前预计利润率", f"{pr*100:.2f}%" if pr is not None else "—（需计算）"),
+            ("保底规则", f"累计 {cfg.X} 抽必出【传说】" if cfg.pity_on and cfg.X else "未开启"),
+        ]
+        for i, (k, v) in enumerate(info):
+            ttk.Label(base, text=f"{k}：", width=18).grid(row=i, column=0, sticky="w", pady=2)
+            ttk.Label(base, text=v).grid(row=i, column=1, sticky="w", pady=2)
+
+        # 等级概率与成本区间（表格形式）
+        lvl_frame = ttk.Labelframe(wrapper, text="等级概率与成本区间", padding=10)
+        lvl_frame.grid(row=0, column=1, sticky="nsew", padx=(8, 0), pady=(0, 8))
+        tree = ttk.Treeview(lvl_frame, columns=("prob", "range"), show="headings", height=8)
+        tree.heading("prob", text="概率")
+        tree.heading("range", text="成本区间")
+        tree.column("prob", width=160, anchor="center")
+        tree.column("range", width=200, anchor="center")
+        for lvl in LEVELS:
+            r = cfg.cost_ranges[lvl]
+            tree.insert("", "end", values=(f"{LEVEL_NAME[lvl]}：{cfg.p_k[lvl]*100:.2f}%", f"{r.lo} ~ {r.hi}"))
+        tree.pack(fill="both", expand=True)
+
+        # 选品概览
+        summary = ttk.Labelframe(wrapper, text="选品概览", padding=10)
+        summary.grid(row=1, column=0, columnspan=2, sticky="nsew")
+        summary.columnconfigure(0, weight=1)
+        summary.columnconfigure(1, weight=1)
+        sys_ids = {it.id for it in bag.filtered}
+        manual = bag.manual_added_ids
+        sys_count = len(set(bag.selected_ids) & sys_ids)
+        manual_count = len(set(bag.selected_ids) & manual)
+        level_counts: Dict[str, int] = {k: 0 for k in LEVELS}
+        for it in selected:
+            level_counts[it.level] = level_counts.get(it.level, 0) + 1
+        ttk.Label(summary, text=f"已选商品：{len(selected)}（系统筛选 {sys_count} / 手动添加 {manual_count}）").grid(row=0, column=0, sticky="w", pady=2, padx=(0,8))
+        lvl_line = " / ".join([f"{LEVEL_NAME[k]}: {level_counts.get(k,0)}" for k in LEVELS])
+        ttk.Label(summary, text=f"等级分布：{lvl_line}").grid(row=0, column=1, sticky="w", pady=2)
+
+        # 动作按钮
         btns = ttk.Frame(self, padding=12)
         btns.pack(fill="x")
+        self.note = ttk.Label(btns, text="", foreground="#6b7280")
+        self.note.pack(side="left")
+        self.btn_online = ttk.Button(btns, text="确认上线", command=self._online)
+        self.btn_online.pack(side="right")
+        self.btn_force = ttk.Button(btns, text="强制上线（通知上级）", command=self._force_online)
+        self.btn_force.pack(side="right", padx=8)
 
-        if allow_actions:
-            self.btn_online = ttk.Button(btns, text="确认上线", command=self._online)
-            self.btn_online.pack(side="right")
-            self.btn_force = ttk.Button(btns, text="强制上线（通知上级）", command=self._force_online)
-            self.btn_force.pack(side="right", padx=8)
-        else:
-            self.btn_online = None
-            self.btn_force = None
-
-        self.note = ttk.Label(self, text="", foreground="#6b7280")
-        self.note.pack(anchor="w", padx=12, pady=(0, 4))
         self._update_action_state()
 
     def _update_action_state(self):
-        if not self.allow_actions:
-            return
         bag = self.bag
         cfg = bag.cfg
         selected = [it for it in self.app.catalog if it.id in bag.selected_ids]
@@ -766,11 +813,9 @@ class SnapshotDialog(tk.Toplevel):
         pr = self.app._profit_rate(cfg, selected, probs) if probs else None
 
         if not probs or not selected:
-            state = "disabled"
-            msg = "缺少最终概率或选品结果，需先计算。"
-            self.btn_online.configure(state=state)
-            self.btn_force.configure(state=state)
-            self.note.configure(text=msg)
+            self.btn_online.configure(state="disabled")
+            self.btn_force.configure(state="disabled")
+            self.note.configure(text="缺少最终概率或选品结果，需先计算。")
             return
 
         pass_ok = pr is not None and pr >= cfg.g - 1e-12
@@ -1713,7 +1758,7 @@ class PageResult(ttk.Frame):
             messagebox.showwarning("提示", "请先完成配置。")
             return
 
-        SnapshotDialog(self, self.app, bag, allow_actions=True, on_state_change=self.on_state_change)
+        ConfigPopup(self, self.app, bag, on_state_change=self.on_state_change)
 
     def on_state_change(self):
         if self.app.ensure_current().status in ("已上线", "待审批"):
