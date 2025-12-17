@@ -98,6 +98,7 @@ class BagState:
     adapt_triggered: bool = False
     adapt_success: bool = False
     final_probs: Dict[int, float] = None
+    config_confirmed: bool = False
 
     def __post_init__(self):
         if self.filtered is None: self.filtered = []
@@ -337,6 +338,60 @@ class App(tk.Tk):
         self.frames[name].tkraise()
         self.frames[name].on_show()
 
+    def _profit_rate(self, cfg: Config, selected: List[Item], probs: Dict[int, float]) -> float:
+        if not cfg or not selected or not probs:
+            return 0.0
+        P_eff = calc_p_eff(cfg.P, cfg.d, cfg.q)
+        ec = expected_cost_total(cfg, selected, probs)
+        return (P_eff - ec) / P_eff if P_eff > 0 else 0.0
+
+    def build_config_snapshot(self, bag: BagState) -> str:
+        cfg = bag.cfg
+        if not cfg:
+            return "缺少配置。"
+        selected = [it for it in self.catalog if it.id in bag.selected_ids]
+        probs = bag.final_probs or {}
+        pr = self._profit_rate(cfg, selected, probs) if probs else None
+
+        sys_ids = {it.id for it in bag.filtered}
+        manual = bag.manual_added_ids
+        sys_count = len(set(bag.selected_ids) & sys_ids)
+        manual_count = len(set(bag.selected_ids) & manual)
+
+        level_counts: Dict[str, int] = {k: 0 for k in LEVELS}
+        for it in selected:
+            level_counts[it.level] = level_counts.get(it.level, 0) + 1
+
+        lines = []
+        lines.append(f"福袋ID：{bag.bag_id}")
+        lines.append(f"福袋名称：{cfg.bag_name}")
+        lines.append(f"上下架时间：{fmt_dt(cfg.up_time)} ~ {fmt_dt(cfg.down_time)}")
+        lines.append(f"单抽标价 P：{cfg.P:.2f} 元")
+        lines.append(f"十连折扣系数 d：{cfg.d:.2f}")
+        lines.append(f"十连抽占比 q：{cfg.q * 100:.0f}%")
+        P_eff = calc_p_eff(cfg.P, cfg.d, cfg.q)
+        lines.append(f"等效单抽收入 P_eff：{P_eff:.2f} 元")
+        lines.append(f"目标利润率：{cfg.g * 100:.2f}%")
+        lines.append(f"当前预计利润率：{(pr * 100):.2f}%" if pr is not None else "当前预计利润率：—（需计算）")
+        lines.append(f"售价筛选比例：商品售价 ≥ 单抽价×{cfg.price_ratio * 100:.0f}%")
+        lines.append(f"保底规则：{'累计 ' + str(cfg.X) + ' 抽必出【传说】' if cfg.pity_on and cfg.X else '未开启'}")
+        lines.append("\n等级概率与成本区间：")
+        for lvl in LEVELS:
+            r = cfg.cost_ranges[lvl]
+            lines.append(f"- {LEVEL_NAME[lvl]}：概率 {cfg.p_k[lvl] * 100:.2f}% ｜ 成本 {r.lo}~{r.hi}")
+
+        lines.append("\n选品概览：")
+        lines.append(f"- 已选商品总数：{len(selected)}")
+        lines.append(f"- 其中系统筛选：{sys_count}，手动添加：{manual_count}")
+        lvl_line = " / ".join([f"{LEVEL_NAME[k]}: {level_counts.get(k,0)}" for k in LEVELS])
+        lines.append(f"- 等级分布：{lvl_line}")
+
+        lines.append("\n自动行为：")
+        lines.append("1) 达到下架时间自动下架")
+        lines.append("2) 折扣结束商品将自动从已选池剔除")
+        lines.append("3) 每日提醒按「提醒与通知设置」的提醒时间/对象弹窗")
+        return "\n".join(lines)
+
     # ---------- lifecycle ----------
     def prune_expired_from_selection(self, bag: BagState):
         now = dt.datetime.now()
@@ -404,6 +459,7 @@ class App(tk.Tk):
         bag.adapt_triggered = False
         bag.adapt_success = False
         bag.final_probs = {}
+        bag.config_confirmed = False
         if not keep_config:
             bag.cfg = None
 
@@ -560,6 +616,7 @@ class ManualAddDialog(tk.Toplevel):
         if off_range:
             lines.append(f"其中 {len(off_range)} 个成本不在 {LEVEL_NAME[lvl]} 范围内，已允许添加（请注意风险）。")
         messagebox.showinfo("已添加", "\n".join(lines))
+        self.bag.config_confirmed = False
         self.destroy()
 
 # -------------------------------
@@ -663,6 +720,40 @@ class ReminderSettingsDialog(tk.Toplevel):
         messagebox.showinfo("已保存", "提醒/通知设置已保存（占位交互）。")
         self.destroy()
 
+class SnapshotDialog(tk.Toplevel):
+    """只读配置快照，确认后解锁上线动作。"""
+    def __init__(self, parent: tk.Tk, app: App, bag: BagState, on_confirm=None):
+        super().__init__(parent)
+        self.app = app
+        self.bag = bag
+        self.on_confirm = on_confirm
+        self.title("当前配置（请确认后再上线）")
+        self.geometry("920x700")
+        self.resizable(True, True)
+
+        ttk.Label(self, text="当前配置（只读快照，修改配置/选品后需重新计算与重新确认）",
+                  font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", padx=12, pady=(12, 6))
+        ttk.Label(self, text="请完整阅读以下信息与风险提示后再执行上线或强制上线操作。",
+                  foreground="#8a1c1c").pack(anchor="w", padx=12, pady=(0, 8))
+
+        txt = tk.Text(self, wrap="word")
+        txt.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        txt.insert("1.0", app.build_config_snapshot(bag))
+        txt.configure(state="disabled")
+
+        btns = ttk.Frame(self, padding=12)
+        btns.pack(fill="x")
+
+        def confirm():
+            bag.config_confirmed = True
+            if self.on_confirm:
+                self.on_confirm()
+            messagebox.showinfo("已确认", "已确认当前配置，可继续上线相关操作。")
+            self.destroy()
+
+        ttk.Button(btns, text="确认已阅读（解锁上线）", command=confirm).pack(side="left")
+        ttk.Button(btns, text="关闭", command=self.destroy).pack(side="left", padx=8)
+
 class PageBagList(ttk.Frame):
     def __init__(self, parent, app: App):
         super().__init__(parent)
@@ -706,6 +797,7 @@ class PageBagList(ttk.Frame):
         btns.pack(fill="x")
         ttk.Button(btns, text="编辑️ 编辑", command=self.edit).pack(side="left")
         ttk.Button(btns, text="查看 查看配置（只读）", command=self.view).pack(side="left", padx=8)
+        ttk.Button(btns, text="查看当前配置", command=self.open_snapshot_from_list).pack(side="left", padx=8)
         self.btn_del_down = ttk.Button(btns, text="删除️ 删除/⏹️ 下架", command=self.del_or_down)
         self.btn_del_down.pack(side="left", padx=8)
 
@@ -730,6 +822,17 @@ class PageBagList(ttk.Frame):
             if kw not in (name or "").lower() and kw not in bag.bag_id.lower():
                 return False
         return True
+
+    def open_snapshot_from_list(self):
+        bag_id = self._selected_bag_id()
+        if not bag_id:
+            messagebox.showinfo("提示", "请先选择一个福袋。")
+            return
+        bag = self.app.bags[bag_id]
+        if not bag.cfg:
+            messagebox.showwarning("提示", "该福袋尚未配置。")
+            return
+        SnapshotDialog(self, self.app, bag, on_confirm=None)
 
     def refresh(self):
         self.app._auto_down_by_time()
@@ -1151,6 +1254,7 @@ class PageConfig(ttk.Frame):
         bag.adapt_triggered = False
         bag.adapt_success = False
         bag.final_probs = {}
+        bag.config_confirmed = False
 
         out = []
         for it in self.app.catalog:
@@ -1306,6 +1410,7 @@ class PagePick(ttk.Frame):
             bag.selected_ids.remove(it_id)
         else:
             bag.selected_ids.add(it_id)
+        bag.config_confirmed = False
         self.refresh()
 
     def on_double_click_alarm(self, event):
@@ -1349,11 +1454,13 @@ class PagePick(ttk.Frame):
     def select_all(self):
         bag = self.app.ensure_current()
         bag.selected_ids |= ({it.id for it in bag.filtered} | set(bag.manual_added_ids))
+        bag.config_confirmed = False
         self.refresh()
 
     def unselect_all(self):
         bag = self.app.ensure_current()
         bag.selected_ids.clear()
+        bag.config_confirmed = False
         self.refresh()
 
     def manual_add(self):
@@ -1368,6 +1475,7 @@ class PagePick(ttk.Frame):
         bag.adapt_triggered = False
         bag.adapt_success = False
         bag.final_probs = {}
+        bag.config_confirmed = False
         self.app.frames["PageConfig"].set_readonly(False)
         self.app.show("PageConfig")
 
@@ -1414,6 +1522,7 @@ class PagePick(ttk.Frame):
                 bag.adapt_success = bool(ok)
                 bag.calc_ok = bool(ok)
                 bag.final_probs = probs2
+            bag.config_confirmed = False
             self.app.show("PageResult")
         except Exception as e:
             messagebox.showerror("计算失败", str(e))
@@ -1517,6 +1626,11 @@ class PageResult(ttk.Frame):
             self.btn_force.configure(state="disabled")
             self.note.configure(text="需先完成计算后再决定上线。")
 
+        if probs and not bag.config_confirmed:
+            self.btn_online.configure(state="disabled")
+            self.btn_force.configure(state="disabled")
+            self.note.configure(text="需先点击「查看当前配置」并确认已阅读后，才能执行上线/强制上线。")
+
     def on_click(self, event):
         # 点击“移除”
         col = self.tree.identify_column(event.x)
@@ -1536,6 +1650,7 @@ class PageResult(ttk.Frame):
         bag.adapt_triggered = False
         bag.adapt_success = False
         bag.final_probs = {}
+        bag.config_confirmed = False
         messagebox.showinfo("已移除", "已移除商品，请返回选品页重新计算。")
         self.on_show()
 
@@ -1545,6 +1660,7 @@ class PageResult(ttk.Frame):
         bag.adapt_triggered = False
         bag.adapt_success = False
         bag.final_probs = {}
+        bag.config_confirmed = False
         self.app.show("PagePick")
 
     def back_config(self):
@@ -1553,11 +1669,15 @@ class PageResult(ttk.Frame):
         bag.adapt_triggered = False
         bag.adapt_success = False
         bag.final_probs = {}
+        bag.config_confirmed = False
         self.app.frames["PageConfig"].set_readonly(False)
         self.app.show("PageConfig")
 
     def online(self):
         bag = self.app.ensure_current()
+        if not bag.config_confirmed:
+            messagebox.showwarning("需先确认配置", "请先点击「查看当前配置」并确认已阅读。")
+            return
         if not bag.final_probs or not bag.selected_ids:
             messagebox.showwarning("禁止上线", "缺少最终概率或选品结果，请返回选品页计算后再上线。")
             return
@@ -1568,6 +1688,9 @@ class PageResult(ttk.Frame):
 
     def force_online(self):
         bag = self.app.ensure_current()
+        if not bag.config_confirmed:
+            messagebox.showwarning("需先确认配置", "请先点击「查看当前配置」并确认已阅读。")
+            return
         if not bag.final_probs or not bag.selected_ids:
             messagebox.showwarning("需要先计算", "请先在选品页完成计算并生成最终概率。")
             return
@@ -1587,33 +1710,7 @@ class PageResult(ttk.Frame):
             messagebox.showwarning("提示", "请先完成配置。")
             return
 
-        win = tk.Toplevel(self)
-        win.title("当前配置预览（修改后需重新计算）")
-        win.geometry("900x640")
-
-        txt = tk.Text(win, wrap="word")
-        txt.pack(fill="both", expand=True, padx=12, pady=12)
-
-        lines = []
-        lines.append(f"福袋ID：{bag.bag_id}")
-        lines.append(f"福袋名称：{cfg.bag_name}")
-        lines.append(f"单抽标价：{cfg.P:.2f} 元")
-        lines.append(f"上下架时间：{fmt_dt(cfg.up_time)} ~ {fmt_dt(cfg.down_time)}")
-        lines.append(f"十连折扣：d={cfg.d:.2f}，十连占比：q={cfg.q * 100:.0f}%")
-        lines.append(f"售价筛选比例：商品售价 ≥ 单抽价×{cfg.price_ratio * 100:.0f}%")
-        lines.append(f"目标利润率：{cfg.g * 100:.2f}%")
-        lines.append(f"保底规则：{'累计 ' + str(cfg.X) + ' 抽必出【传说】' if cfg.pity_on and cfg.X else '未开启'}")
-        lines.append("\n等级概率与成本范围：")
-        for lvl in LEVELS:
-            r = cfg.cost_ranges[lvl]
-            lines.append(f"- {LEVEL_NAME[lvl]}：概率 {cfg.p_k[lvl] * 100:.2f}% ｜ 成本 {r.lo}~{r.hi}")
-        lines.append("\n提示：如修改配置或选品，请返回配置/选品页并重新计算以刷新预计利润率。")
-
-        txt.insert("1.0", "\n".join(lines))
-
-        btns = ttk.Frame(win, padding=12)
-        btns.pack(fill="x")
-        ttk.Button(btns, text="关闭", command=win.destroy).pack(side="left", padx=8)
+        SnapshotDialog(self, self.app, bag, on_confirm=self.on_show)
 
 # -------------------------------
 # main
