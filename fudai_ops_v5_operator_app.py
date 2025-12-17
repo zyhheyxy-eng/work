@@ -292,8 +292,12 @@ class App(tk.Tk):
         self.settings = {
             'reminder_enabled': True,
             'reminder_time': '16:00',
+            'reminder_person': '默认运营',
+            'reminder_phone': '13800000000',
             'notify_enabled': True,
             'notify_supervisor_on_force': True,
+            'supervisor_name': '上级运营',
+            'supervisor_phone': '13900000000',
         }
         self.current_bag_id: Optional[str] = None
 
@@ -376,7 +380,11 @@ class App(tk.Tk):
         if not self.settings.get('reminder_enabled', True):
             return
         now = dt.datetime.now()
-        if now.hour != 16 or now.minute != 0:
+        try:
+            hh, mm = map(int, str(self.settings.get('reminder_time', '16:00')).split(":"))
+        except Exception:
+            hh, mm = 16, 0
+        if now.hour != hh or now.minute != mm:
             return
         today = now.date()
         if self._remind_snooze_date == today:
@@ -610,10 +618,33 @@ class ReminderSettingsDialog(tk.Toplevel):
         self.v_remind = tk.BooleanVar(value=bool(app.settings.get('reminder_enabled', True)))
         self.v_notify = tk.BooleanVar(value=bool(app.settings.get('notify_enabled', True)))
         self.v_force = tk.BooleanVar(value=bool(app.settings.get('notify_supervisor_on_force', True)))
+        self.v_person = tk.StringVar(value=str(app.settings.get('reminder_person', "")))
+        self.v_phone = tk.StringVar(value=str(app.settings.get('reminder_phone', "")))
+        self.v_time = tk.StringVar(value=str(app.settings.get('reminder_time', "16:00")))
 
         ttk.Checkbutton(box, text="开启每日提醒弹窗（默认 16:00）", variable=self.v_remind).pack(anchor="w", pady=4)
         ttk.Checkbutton(box, text="开启通知（占位：可对接企业微信/邮件）", variable=self.v_notify).pack(anchor="w", pady=4)
         ttk.Checkbutton(box, text="强制上线时通知上级（占位交互）", variable=self.v_force).pack(anchor="w", pady=4)
+
+        frm = ttk.Frame(box)
+        frm.pack(fill="x", pady=(6, 2))
+        ttk.Label(frm, text="提醒人：", width=12).pack(side="left")
+        ttk.Entry(frm, textvariable=self.v_person, width=20).pack(side="left")
+        ttk.Label(frm, text="手机号：", width=8).pack(side="left")
+        ttk.Entry(frm, textvariable=self.v_phone, width=16).pack(side="left")
+
+        frm2 = ttk.Frame(box)
+        frm2.pack(fill="x", pady=(2, 8))
+        ttk.Label(frm2, text="提醒时间：", width=12).pack(side="left")
+        ttk.Entry(frm2, textvariable=self.v_time, width=10).pack(side="left")
+        ttk.Label(frm2, text="(HH:MM，例如 16:00)", foreground="#6b7280").pack(side="left", padx=(6, 0))
+
+        sup = ttk.Frame(box)
+        sup.pack(fill="x", pady=(4, 0))
+        ttk.Label(sup, text="强制上线通知对象：", width=18).pack(side="left")
+        sup_name = str(app.settings.get('supervisor_name', '上级运营'))
+        sup_phone = str(app.settings.get('supervisor_phone', ''))
+        ttk.Label(sup, text=f"{sup_name}（{sup_phone}）", foreground="#374151").pack(side="left")
 
         ttk.Label(box, text="说明：此处仅提供交互入口与开关，具体通知通道可后续接入。", foreground="#6b7280").pack(anchor="w", pady=(10, 0))
 
@@ -626,6 +657,9 @@ class ReminderSettingsDialog(tk.Toplevel):
         self.app.settings['reminder_enabled'] = bool(self.v_remind.get())
         self.app.settings['notify_enabled'] = bool(self.v_notify.get())
         self.app.settings['notify_supervisor_on_force'] = bool(self.v_force.get())
+        self.app.settings['reminder_person'] = self.v_person.get().strip() or "默认运营"
+        self.app.settings['reminder_phone'] = self.v_phone.get().strip()
+        self.app.settings['reminder_time'] = self.v_time.get().strip() or "16:00"
         messagebox.showinfo("已保存", "提醒/通知设置已保存（占位交互）。")
         self.destroy()
 
@@ -653,13 +687,16 @@ class PageBagList(ttk.Frame):
         cb.pack(side="right")
         self.v_status.trace_add("write", lambda *_: self.refresh())
 
-        self.tree = ttk.Treeview(self, columns=("id","name","P","time","status"), show="headings", height=18)
+        self.tree = ttk.Treeview(self, columns=("id","name","P","time","target","profit","count","status"), show="headings", height=18)
         for c, t, w, a in [
             ("id", "福袋ID", 90, "center"),
-            ("name", "福袋名称", 260, "w"),
+            ("name", "福袋名称", 240, "w"),
             ("P", "单抽标价(元)", 110, "e"),
-            ("time", "上下架时间", 260, "center"),
-            ("status", "状态", 100, "center"),
+            ("time", "上下架时间", 240, "center"),
+            ("target", "目标利润率", 110, "center"),
+            ("profit", "预计利润率", 110, "center"),
+            ("count", "商品个数", 90, "center"),
+            ("status", "状态", 90, "center"),
         ]:
             self.tree.heading(c, text=t)
             self.tree.column(c, width=w, anchor=a)
@@ -705,7 +742,16 @@ class PageBagList(ttk.Frame):
             time_s = "—"
             if bag.cfg:
                 time_s = f"{fmt_dt(bag.cfg.up_time)} ~ {fmt_dt(bag.cfg.down_time)}"
-            self.tree.insert("", "end", iid=bag_id, values=(bag_id, name, P, time_s, bag.status))
+            target = f"{bag.cfg.g * 100:.0f}%" if bag.cfg else "—"
+            profit = "—"
+            count = len(bag.selected_ids) if bag.selected_ids else 0
+            if bag.cfg and bag.final_probs:
+                selected = [it for it in self.app.catalog if it.id in bag.selected_ids]
+                P_eff = calc_p_eff(bag.cfg.P, bag.cfg.d, bag.cfg.q)
+                ec = expected_cost_total(bag.cfg, selected, bag.final_probs) if selected else 0.0
+                pr = (P_eff - ec) / P_eff if P_eff > 0 else 0.0
+                profit = f"{pr * 100:.2f}%"
+            self.tree.insert("", "end", iid=bag_id, values=(bag_id, name, P, time_s, target, profit, count, bag.status))
 
     def _selected_bag_id(self) -> Optional[str]:
         sel = self.tree.selection()
@@ -1407,7 +1453,7 @@ class PageResult(ttk.Frame):
 
         btns = ttk.Frame(self)
         btns.pack(fill="x", pady=10)
-        ttk.Button(btns, text="查看公示规则", command=self.show_disclosure).pack(side="left", padx=6)
+        ttk.Button(btns, text="查看当前配置", command=self.show_config_snapshot).pack(side="left", padx=6)
         ttk.Button(btns, text="返回选品", command=self.back_pick).pack(side="left", padx=6)
         ttk.Button(btns, text="返回配置", command=self.back_config).pack(side="left", padx=6)
         self.btn_online = ttk.Button(btns, text="确认上线", command=self.online)
@@ -1534,19 +1580,16 @@ class PageResult(ttk.Frame):
         bag.status = "待审批"
         self.app.show("PageBagList")
 
-    def show_disclosure(self):
+    def show_config_snapshot(self):
         bag = self.app.ensure_current()
         cfg = bag.cfg
-        if not cfg or not bag.final_probs:
-            messagebox.showwarning("提示", "请先完成计算。")
+        if not cfg:
+            messagebox.showwarning("提示", "请先完成配置。")
             return
 
-        selected = [it for it in self.app.catalog if it.id in bag.selected_ids]
-        probs = bag.final_probs
-
         win = tk.Toplevel(self)
-        win.title("概率公示规则（可复制）")
-        win.geometry("900x600")
+        win.title("当前配置预览（修改后需重新计算）")
+        win.geometry("900x640")
 
         txt = tk.Text(win, wrap="word")
         txt.pack(fill="both", expand=True, padx=12, pady=12)
@@ -1558,29 +1601,18 @@ class PageResult(ttk.Frame):
         lines.append(f"上下架时间：{fmt_dt(cfg.up_time)} ~ {fmt_dt(cfg.down_time)}")
         lines.append(f"十连折扣：d={cfg.d:.2f}，十连占比：q={cfg.q * 100:.0f}%")
         lines.append(f"售价筛选比例：商品售价 ≥ 单抽价×{cfg.price_ratio * 100:.0f}%")
+        lines.append(f"目标利润率：{cfg.g * 100:.2f}%")
         lines.append(f"保底规则：{'累计 ' + str(cfg.X) + ' 抽必出【传说】' if cfg.pity_on and cfg.X else '未开启'}")
-        lines.append("\n概率公示（最终）：（以下概率可直接用于前端展示）\n")
-
-        rows = []
-        for it in selected:
-            p = probs.get(it.id, 0.0)
-            if p > 0:
-                rows.append((LEVEL_NAME[it.level], it.name, p))
-        rows.sort(key=lambda x: (x[0], -x[2], x[1]))
-        for lvl, name, p in rows:
-            lines.append(f"- {lvl}｜{name}：{p * 100:.6f}%")
-        lines.append(f"\n概率总和：{sum(probs.values()) * 100:.4f}%（理论应≈100%）")
+        lines.append("\n等级概率与成本范围：")
+        for lvl in LEVELS:
+            r = cfg.cost_ranges[lvl]
+            lines.append(f"- {LEVEL_NAME[lvl]}：概率 {cfg.p_k[lvl] * 100:.2f}% ｜ 成本 {r.lo}~{r.hi}")
+        lines.append("\n提示：如修改配置或选品，请返回配置/选品页并重新计算以刷新预计利润率。")
 
         txt.insert("1.0", "\n".join(lines))
 
-        def copy_all():
-            self.clipboard_clear()
-            self.clipboard_append(txt.get("1.0", "end-1c"))
-            messagebox.showinfo("已复制", "已复制到剪贴板。")
-
         btns = ttk.Frame(win, padding=12)
         btns.pack(fill="x")
-        ttk.Button(btns, text="复制全部", command=copy_all).pack(side="left")
         ttk.Button(btns, text="关闭", command=win.destroy).pack(side="left", padx=8)
 
 # -------------------------------
