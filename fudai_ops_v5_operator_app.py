@@ -98,8 +98,6 @@ class BagState:
     adapt_triggered: bool = False
     adapt_success: bool = False
     final_probs: Dict[int, float] = None
-    sim_ok: bool = False
-    sim_metrics: Optional[Tuple[float, float, float]] = None
 
     def __post_init__(self):
         if self.filtered is None: self.filtered = []
@@ -219,53 +217,6 @@ def auto_adapt(cfg: Config, selected: List[Item], c_target: float,
 
     return best_ok, best_ec, best_probs
 
-def simulate_draws(cfg: Config, selected: List[Item], probs: Dict[int, float], n: int, seed: int = 20251213) -> Tuple[float, float, float]:
-    rnd = random.Random(seed)
-    by_level: Dict[str, List[Tuple[Item, float]]] = {k: [] for k in LEVELS}
-    for it in selected:
-        p = probs.get(it.id, 0.0)
-        if p > 0:
-            by_level[it.level].append((it, p))
-
-    lvl_list, lvl_w = [], []
-    lvl_items: Dict[str, Tuple[List[Item], List[float]]] = {}
-    for lvl in LEVELS:
-        s = sum(p for _, p in by_level[lvl])
-        if s > 0:
-            lvl_list.append(lvl)
-            lvl_w.append(s)
-            items = [it for it, _ in by_level[lvl]]
-            w = [p for _, p in by_level[lvl]]
-            sw = sum(w)
-            w = [x / sw for x in w] if sw > 0 else [1 / len(w) for _ in w]
-            lvl_items[lvl] = (items, w)
-
-    revenue_per_draw = calc_p_eff(cfg.P, cfg.d, cfg.q)
-    total_revenue = revenue_per_draw * n
-
-    pity = 0
-    total_cost = 0.0
-    legend_hits = 0
-
-    for _ in range(n):
-        pity += 1
-        if cfg.pity_on and cfg.X and cfg.X > 0 and pity >= cfg.X and "L" in lvl_items:
-            lvl = "L"
-        else:
-            lvl = rnd.choices(lvl_list, weights=lvl_w, k=1)[0]
-        items, w = lvl_items[lvl]
-        it = rnd.choices(items, weights=w, k=1)[0]
-        total_cost += it.cost
-        if lvl == "L":
-            legend_hits += 1
-            pity = 0
-
-    profit = total_revenue - total_cost
-    profit_rate = profit / total_revenue if total_revenue > 0 else 0.0
-    avg_profit = profit / n if n > 0 else 0.0
-    legend_rate = legend_hits / n if n > 0 else 0.0
-    return profit_rate, avg_profit, legend_rate
-
 # -------------------------------
 # 模拟商品库（接后台可替换）
 # -------------------------------
@@ -356,7 +307,7 @@ class App(tk.Tk):
         container.columnconfigure(0, weight=1)
 
         self.frames = {}
-        for F in (PageBagList, PageConfig, PagePick, PageResult, PageSim):
+        for F in (PageBagList, PageConfig, PagePick, PageResult):
             frame = F(container, self)
             self.frames[F.__name__] = frame
             frame.grid(row=0, column=0, sticky="nsew")
@@ -445,8 +396,6 @@ class App(tk.Tk):
         bag.adapt_triggered = False
         bag.adapt_success = False
         bag.final_probs = {}
-        bag.sim_ok = False
-        bag.sim_metrics = None
         if not keep_config:
             bag.cfg = None
 
@@ -1156,8 +1105,6 @@ class PageConfig(ttk.Frame):
         bag.adapt_triggered = False
         bag.adapt_success = False
         bag.final_probs = {}
-        bag.sim_ok = False
-        bag.sim_metrics = None
 
         out = []
         for it in self.app.catalog:
@@ -1375,8 +1322,6 @@ class PagePick(ttk.Frame):
         bag.adapt_triggered = False
         bag.adapt_success = False
         bag.final_probs = {}
-        bag.sim_ok = False
-        bag.sim_metrics = None
         self.app.frames["PageConfig"].set_readonly(False)
         self.app.show("PageConfig")
 
@@ -1423,9 +1368,6 @@ class PagePick(ttk.Frame):
                 bag.adapt_success = bool(ok)
                 bag.calc_ok = bool(ok)
                 bag.final_probs = probs2
-
-            bag.sim_ok = False
-            bag.sim_metrics = None
             self.app.show("PageResult")
         except Exception as e:
             messagebox.showerror("计算失败", str(e))
@@ -1465,8 +1407,6 @@ class PageResult(ttk.Frame):
 
         btns = ttk.Frame(self)
         btns.pack(fill="x", pady=10)
-        self.btn_sim = ttk.Button(btns, text="抽卡模拟", command=self.goto_sim)
-        self.btn_sim.pack(side="left")
         ttk.Button(btns, text="查看公示规则", command=self.show_disclosure).pack(side="left", padx=6)
         ttk.Button(btns, text="返回选品", command=self.back_pick).pack(side="left", padx=6)
         ttk.Button(btns, text="返回配置", command=self.back_config).pack(side="left", padx=6)
@@ -1511,37 +1451,25 @@ class PageResult(ttk.Frame):
             self.tree.insert("", "end", iid=str(it_id), values=(name, lvl, stock, f"{cost:.2f}", f"{p * 100:.4f}%", remain, op))
 
         P_eff = calc_p_eff(cfg.P, cfg.d, cfg.q)
-        c_target = calc_c_target(P_eff, cfg.g)
         ec = expected_cost_total(cfg, selected, probs) if probs else float("inf")
-        gap = ec - c_target
+        profit_rate = (P_eff - ec) / P_eff if P_eff > 0 else 0.0
 
-        if bag.calc_ok:
-            if bag.adapt_triggered and bag.adapt_success:
-                self.banner.configure(bg="#1f6f3c", fg="white", text="✅ 配置通过！自适应调权完成（若触发），可进入模拟。")
-            else:
-                self.banner.configure(bg="#1f6f3c", fg="white", text="✅ 配置通过！可进入模拟。")
-            self.btn_sim.configure(state="normal")
-        else:
-            self.banner.configure(bg="#8a1c1c", fg="white", text=f"❌ 配置未通过！期望成本超出盈利红线 {gap:.2f} 元，请返回调整。")
-            # 允许模拟：即使配置未通过，也可查看模拟结果用于判断差距
-            self.btn_sim.configure(state=("normal" if probs else "disabled"))
-
-        # 上线按钮逻辑：
-        # - 模拟通过：允许正常上线
-        # - 模拟未通过但已模拟过：允许强制上线（通知上级，占位交互）
-        if bag.sim_metrics:
-            if bag.sim_ok:
+        if probs:
+            if profit_rate >= cfg.g - 1e-12:
+                self.banner.configure(bg="#1f6f3c", fg="white", text=f"✅ 预计利润率 {profit_rate * 100:.2f}% 达标（目标 {cfg.g * 100:.0f}%）")
                 self.btn_online.configure(state="normal")
                 self.btn_force.configure(state="disabled")
-                self.note.configure(text="模拟已通过：允许上线。")
+                self.note.configure(text="允许正常上线。")
             else:
+                self.banner.configure(bg="#8a1c1c", fg="white", text=f"⚠️ 预计利润率 {profit_rate * 100:.2f}% 低于目标 {cfg.g * 100:.0f}%")
                 self.btn_online.configure(state="disabled")
                 self.btn_force.configure(state="normal")
-                self.note.configure(text="模拟未通过：可选择强制上线（将通知上级审批）。")
+                self.note.configure(text="未达标也可强制上线（将通知上级审批）。")
         else:
+            self.banner.configure(bg="#8a1c1c", fg="white", text="❌ 缺少最终概率，请返回选品页完成计算。")
             self.btn_online.configure(state="disabled")
             self.btn_force.configure(state="disabled")
-            self.note.configure(text=("提示：请先进行一次「抽卡模拟」。" if bag.final_probs else "提示：请先在选品页完成计算。"))
+            self.note.configure(text="需先完成计算后再决定上线。")
 
     def on_click(self, event):
         # 点击“移除”
@@ -1562,8 +1490,6 @@ class PageResult(ttk.Frame):
         bag.adapt_triggered = False
         bag.adapt_success = False
         bag.final_probs = {}
-        bag.sim_ok = False
-        bag.sim_metrics = None
         messagebox.showinfo("已移除", "已移除商品，请返回选品页重新计算。")
         self.on_show()
 
@@ -1573,8 +1499,6 @@ class PageResult(ttk.Frame):
         bag.adapt_triggered = False
         bag.adapt_success = False
         bag.final_probs = {}
-        bag.sim_ok = False
-        bag.sim_metrics = None
         self.app.show("PagePick")
 
     def back_config(self):
@@ -1583,22 +1507,13 @@ class PageResult(ttk.Frame):
         bag.adapt_triggered = False
         bag.adapt_success = False
         bag.final_probs = {}
-        bag.sim_ok = False
-        bag.sim_metrics = None
         self.app.frames["PageConfig"].set_readonly(False)
         self.app.show("PageConfig")
 
-    def goto_sim(self):
-        bag = self.app.ensure_current()
-        if not bag.final_probs or not bag.selected_ids:
-            messagebox.showwarning("不可模拟", "缺少最终概率或选品结果，请先返回选品页进行计算。")
-            return
-        self.app.show("PageSim")
-
     def online(self):
         bag = self.app.ensure_current()
-        if not (bag.calc_ok and bag.sim_ok):
-            messagebox.showwarning("禁止上线", "必须先通过计算与模拟，才允许上线。")
+        if not bag.final_probs or not bag.selected_ids:
+            messagebox.showwarning("禁止上线", "缺少最终概率或选品结果，请返回选品页计算后再上线。")
             return
         # 上线：状态更新，回列表
         bag.status = "已上线"
@@ -1607,18 +1522,14 @@ class PageResult(ttk.Frame):
 
     def force_online(self):
         bag = self.app.ensure_current()
-        # 允许在模拟不通过时强制上线：只做交互占位 + 通知上级
-        if not bag.sim_metrics:
-            messagebox.showwarning("需要先模拟", "请先完成一次抽卡模拟，再决定是否强制上线。")
+        if not bag.final_probs or not bag.selected_ids:
+            messagebox.showwarning("需要先计算", "请先在选品页完成计算并生成最终概率。")
             return
-        if bag.sim_ok:
-            # 模拟通过直接走正常上线
-            return self.online()
 
         if self.app.settings.get('notify_supervisor_on_force', True) and self.app.settings.get('notify_enabled', True):
-            messagebox.showinfo("已通知上级", "模拟未通过，已发起强制上线申请并通知上级审批（占位交互）。")
+            messagebox.showinfo("已通知上级", "预计利润率未达标，已发起强制上线申请并通知上级审批（占位交互）。")
         else:
-            messagebox.showinfo("已记录", "模拟未通过，已记录强制上线申请（占位交互）。")
+            messagebox.showinfo("已记录", "预计利润率未达标，已记录强制上线申请（占位交互）。")
 
         bag.status = "待审批"
         self.app.show("PageBagList")
@@ -1671,158 +1582,6 @@ class PageResult(ttk.Frame):
         btns.pack(fill="x")
         ttk.Button(btns, text="复制全部", command=copy_all).pack(side="left")
         ttk.Button(btns, text="关闭", command=win.destroy).pack(side="left", padx=8)
-
-# -------------------------------
-# Page 5：抽卡模拟页
-# -------------------------------
-class PageSim(ttk.Frame):
-    def __init__(self, parent, app: App):
-        super().__init__(parent)
-        self.app = app
-
-        self.breadcrumb = ttk.Label(self, text="", foreground="#9ca3af")
-        self.breadcrumb.pack(anchor="w")
-
-        ttk.Label(self, text="抽卡模拟（极简工具）", font=("Microsoft YaHei UI", 16, "bold")).pack(anchor="w", pady=(0, 10))
-
-        top = ttk.Frame(self)
-        top.pack(fill="x", pady=8)
-        ttk.Label(top, text="模拟抽数（5万~30万）", width=22).pack(side="left")
-        self.v_n = tk.StringVar(value="100000")
-        ttk.Entry(top, textvariable=self.v_n, width=12).pack(side="left")
-        self.btn_run = ttk.Button(top, text="开始模拟", command=self.run_sim)
-        self.btn_run.pack(side="left", padx=10)
-        self.lbl = ttk.Label(top, text="", foreground="#9ca3af")
-        self.lbl.pack(side="left")
-
-        cards = ttk.Frame(self)
-        cards.pack(fill="x", pady=10)
-        self.card_pr = self._card(cards, "利润率", 0)
-        self.card_ap = self._card(cards, "平均每抽利润", 1)
-        self.card_lr = self._card(cards, "传说出货率", 2)
-
-        btns = ttk.Frame(self)
-        btns.pack(fill="x", pady=12)
-        ttk.Button(btns, text="重新模拟", command=self.run_sim).pack(side="left")
-        ttk.Button(btns, text="返回结果页", command=lambda: self.app.show("PageResult")).pack(side="left", padx=6)
-        self.btn_confirm = ttk.Button(btns, text="确认上线（达标激活）", command=self.confirm_online)
-        self.btn_confirm.pack(side="right")
-        self.btn_force = ttk.Button(btns, text="强制上线（通知上级）", command=self.force_online)
-        self.btn_force.pack(side="right", padx=8)
-
-        self.note = ttk.Label(self, text="", foreground="#9ca3af")
-        self.note.pack(anchor="w")
-
-    def _card(self, parent, title: str, idx: int):
-        lf = ttk.Labelframe(parent, text=title, padding=12)
-        lf.grid(row=0, column=idx, sticky="ew", padx=(0 if idx == 0 else 8, 0))
-        parent.columnconfigure(idx, weight=1)
-        v = tk.StringVar(value="—")
-        lab = ttk.Label(lf, textvariable=v, font=("Microsoft YaHei UI", 14, "bold"))
-        lab.pack(anchor="center")
-        return (v, lab)
-
-    def on_show(self):
-        bag = self.app.ensure_current()
-        cfg = bag.cfg
-        if cfg:
-            self.breadcrumb.configure(text=f"福袋列表 → {bag.bag_id} {cfg.bag_name} → 抽卡模拟")
-        self.lbl.configure(text="")
-        self.note.configure(text="")
-        self.btn_confirm.configure(state="disabled")
-        self.btn_force.configure(state="disabled")
-        for v, _ in (self.card_pr, self.card_ap, self.card_lr):
-            v.set("—")
-
-    def _parse_n(self) -> int:
-        n = int(float(self.v_n.get().strip()))
-        n = max(50_000, min(300_000, n))
-        self.v_n.set(str(n))
-        return n
-
-    def run_sim(self):
-        bag = self.app.ensure_current()
-        if not bag.final_probs or not bag.selected_ids:
-            messagebox.showwarning("不可模拟", "缺少最终概率或选品结果，请先返回选品页计算。")
-            return
-        try:
-            n = self._parse_n()
-        except Exception:
-            messagebox.showerror("输入错误", "模拟抽数请输入数字。")
-            return
-
-        self.lbl.configure(text="模拟中...")
-        self.btn_run.configure(state="disabled")
-        self.update_idletasks()
-        self.after(60, lambda: self._do_sim(n))
-
-    def _do_sim(self, n: int):
-        bag = self.app.ensure_current()
-        try:
-            cfg = bag.cfg
-            assert cfg is not None
-            selected = [it for it in self.app.catalog if it.id in bag.selected_ids]
-            probs = bag.final_probs
-            if not selected or not probs:
-                raise ValueError("缺少最终概率，请返回重新计算。")
-
-            pr, ap, lr = simulate_draws(cfg, selected, probs, n=n)
-            ok = pr >= cfg.g - 1e-12
-            bag.sim_ok = bool(ok)
-            bag.sim_metrics = (pr, ap, lr)
-
-            good, bad = "#1f6f3c", "#8a1c1c"
-            pr_v, pr_lab = self.card_pr
-            ap_v, ap_lab = self.card_ap
-            lr_v, lr_lab = self.card_lr
-
-            pr_v.set(f"{pr * 100:.2f}%（目标 {cfg.g * 100:.0f}%）")
-            ap_v.set(f"{ap:.2f} 元")
-            lr_v.set(f"{lr * 100:.2f}%")
-
-            pr_lab.configure(foreground=(good if ok else bad))
-            ap_lab.configure(foreground=(good if ok else bad))
-            lr_lab.configure(foreground=good)
-
-            if ok:
-                self.note.configure(text="✅ 模拟利润率达标：允许上线。返回结果页点击「确认上线」。")
-                self.btn_confirm.configure(state="normal")
-                self.btn_force.configure(state="disabled")
-            else:
-                self.note.configure(text="❌ 模拟利润率不达标：禁止上线，请返回调整。")
-                self.btn_confirm.configure(state="disabled")
-                self.btn_force.configure(state="disabled")
-        except Exception as e:
-            messagebox.showerror("模拟失败", str(e))
-        finally:
-            self.lbl.configure(text="")
-            self.btn_run.configure(state="normal")
-
-    def confirm_online(self):
-        bag = self.app.ensure_current()
-        if not bag.sim_ok:
-            messagebox.showwarning("禁止上线", "模拟未通过，不允许上线。")
-            return
-        # 直接上线并回列表
-        bag.status = "已上线"
-        messagebox.showinfo("上线成功", " 上线成功！已返回福袋列表。")
-        self.app.show("PageBagList")
-
-    def force_online(self):
-        bag = self.app.ensure_current()
-        if not bag.sim_metrics:
-            messagebox.showwarning("需要先模拟", "请先完成一次抽卡模拟，再决定是否强制上线。")
-            return
-        if bag.sim_ok:
-            return self.confirm_online()
-
-        if self.app.settings.get('notify_supervisor_on_force', True) and self.app.settings.get('notify_enabled', True):
-            messagebox.showinfo("已通知上级", "模拟未通过，已发起强制上线申请并通知上级审批（占位交互）。")
-        else:
-            messagebox.showinfo("已记录", "模拟未通过，已记录强制上线申请（占位交互）。")
-
-        bag.status = "待审批"
-        self.app.show("PageBagList")
 
 # -------------------------------
 # main
