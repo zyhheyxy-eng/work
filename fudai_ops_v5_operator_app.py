@@ -722,13 +722,14 @@ class ReminderSettingsDialog(tk.Toplevel):
 
 class SnapshotDialog(tk.Toplevel):
     """只读配置快照，确认后解锁上线动作。"""
-    def __init__(self, parent: tk.Tk, app: App, bag: BagState, on_confirm=None):
+    def __init__(self, parent: tk.Tk, app: App, bag: BagState, allow_actions: bool = False, on_state_change=None):
         super().__init__(parent)
         self.app = app
         self.bag = bag
-        self.on_confirm = on_confirm
+        self.allow_actions = allow_actions
+        self.on_state_change = on_state_change
         self.title("当前配置（请确认后再上线）")
-        self.geometry("920x700")
+        self.geometry("920x720")
         self.resizable(True, True)
 
         ttk.Label(self, text="当前配置（只读快照，修改配置/选品后需重新计算与重新确认）",
@@ -737,22 +738,98 @@ class SnapshotDialog(tk.Toplevel):
                   foreground="#8a1c1c").pack(anchor="w", padx=12, pady=(0, 8))
 
         txt = tk.Text(self, wrap="word")
-        txt.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+        txt.pack(fill="both", expand=True, padx=12, pady=(0, 4))
         txt.insert("1.0", app.build_config_snapshot(bag))
         txt.configure(state="disabled")
+
+        self.note = ttk.Label(self, text="", foreground="#6b7280")
+        self.note.pack(anchor="w", padx=12, pady=(0, 4))
 
         btns = ttk.Frame(self, padding=12)
         btns.pack(fill="x")
 
         def confirm():
             bag.config_confirmed = True
-            if self.on_confirm:
-                self.on_confirm()
+            self._update_action_state()
+            if self.on_state_change:
+                self.on_state_change()
             messagebox.showinfo("已确认", "已确认当前配置，可继续上线相关操作。")
-            self.destroy()
 
         ttk.Button(btns, text="确认已阅读（解锁上线）", command=confirm).pack(side="left")
+
+        if allow_actions:
+            self.btn_online = ttk.Button(btns, text="确认上线", command=self._online)
+            self.btn_online.pack(side="right")
+            self.btn_force = ttk.Button(btns, text="强制上线（通知上级）", command=self._force_online)
+            self.btn_force.pack(side="right", padx=8)
+        else:
+            self.btn_online = None
+            self.btn_force = None
+
         ttk.Button(btns, text="关闭", command=self.destroy).pack(side="left", padx=8)
+        self._update_action_state()
+
+    def _update_action_state(self):
+        if not self.allow_actions:
+            return
+        bag = self.bag
+        cfg = bag.cfg
+        selected = [it for it in self.app.catalog if it.id in bag.selected_ids]
+        probs = bag.final_probs or {}
+        pr = self.app._profit_rate(cfg, selected, probs) if probs else None
+
+        if not probs or not selected:
+            state = "disabled"
+            msg = "缺少最终概率或选品结果，需先计算。"
+            self.btn_online.configure(state=state)
+            self.btn_force.configure(state=state)
+            self.note.configure(text=msg)
+            return
+
+        if not bag.config_confirmed:
+            msg = "请先点击「确认已阅读」后再执行上线或强制上线。"
+            self.btn_online.configure(state="disabled")
+            self.btn_force.configure(state="disabled")
+            self.note.configure(text=msg)
+            return
+
+        pass_ok = pr is not None and pr >= cfg.g - 1e-12
+        if pass_ok:
+            self.btn_online.configure(state="normal")
+            self.btn_force.configure(state="disabled")
+            self.note.configure(text="预计利润率达标：可确认上线。")
+        else:
+            self.btn_online.configure(state="disabled")
+            self.btn_force.configure(state="normal")
+            self.note.configure(text="预计利润率未达标：仅可强制上线并通知上级。")
+
+    def _online(self):
+        bag = self.bag
+        cfg = bag.cfg
+        selected = [it for it in self.app.catalog if it.id in bag.selected_ids]
+        probs = bag.final_probs or {}
+        pr = self.app._profit_rate(cfg, selected, probs) if probs else None
+        if pr is None or pr < cfg.g - 1e-12:
+            messagebox.showwarning("不允许上线", "预计利润率未达标，需改为强制上线。")
+            return
+        bag.status = "已上线"
+        messagebox.showinfo("上线成功", "上线成功！已返回福袋列表。")
+        if self.on_state_change:
+            self.on_state_change()
+        self.destroy()
+
+    def _force_online(self):
+        bag = self.bag
+        if not bag.final_probs or not bag.selected_ids:
+            messagebox.showwarning("需要先计算", "请先完成计算并生成最终概率。")
+            return
+        sup_name = str(self.app.settings.get('supervisor_name', '上级运营'))
+        sup_phone = str(self.app.settings.get('supervisor_phone', ''))
+        messagebox.showinfo("已通知上级", f"已发起强制上线申请，将通知 {sup_name}（{sup_phone}）审批（占位交互）。")
+        bag.status = "待审批"
+        if self.on_state_change:
+            self.on_state_change()
+        self.destroy()
 
 class PageBagList(ttk.Frame):
     def __init__(self, parent, app: App):
@@ -797,7 +874,6 @@ class PageBagList(ttk.Frame):
         btns.pack(fill="x")
         ttk.Button(btns, text="编辑️ 编辑", command=self.edit).pack(side="left")
         ttk.Button(btns, text="查看 查看配置（只读）", command=self.view).pack(side="left", padx=8)
-        ttk.Button(btns, text="查看当前配置", command=self.open_snapshot_from_list).pack(side="left", padx=8)
         self.btn_del_down = ttk.Button(btns, text="删除️ 删除/⏹️ 下架", command=self.del_or_down)
         self.btn_del_down.pack(side="left", padx=8)
 
@@ -823,16 +899,6 @@ class PageBagList(ttk.Frame):
                 return False
         return True
 
-    def open_snapshot_from_list(self):
-        bag_id = self._selected_bag_id()
-        if not bag_id:
-            messagebox.showinfo("提示", "请先选择一个福袋。")
-            return
-        bag = self.app.bags[bag_id]
-        if not bag.cfg:
-            messagebox.showwarning("提示", "该福袋尚未配置。")
-            return
-        SnapshotDialog(self, self.app, bag, on_confirm=None)
 
     def refresh(self):
         self.app._auto_down_by_time()
@@ -934,6 +1000,8 @@ class PageConfig(ttk.Frame):
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         right.grid(row=0, column=1, sticky="nsew", padx=(10, 0))
 
+        ttk.Button(self, text="保存并返回列表", command=self.on_save).place(relx=1.0, y=10, x=-10, anchor="ne")
+
         # vars
         self.v_name = tk.StringVar(value="")
         self.v_P = tk.StringVar(value="99")
@@ -985,13 +1053,10 @@ class PageConfig(ttk.Frame):
         self.btns = ttk.Frame(body)
         self.btns.grid(row=2, column=0, columnspan=2, sticky="ew", pady=12)
 
-        self.btn_save = ttk.Button(self.btns, text="保存配置（返回列表）", command=self.on_save)
-        self.btn_save.pack(side="left")
         self.btn_filter = ttk.Button(self.btns, text="筛选商品（去选品）", command=self.on_filter)
         self.btn_filter.pack(side="left", padx=8)
-        self.btn_manual = ttk.Button(self.btns, text="手动添加商品", command=self.on_manual_add)
-        self.btn_manual.pack(side="left", padx=8)
-        ttk.Button(self.btns, text="返回列表", command=lambda: self.app.show("PageBagList")).pack(side="right")
+        self.btn_save = ttk.Button(self.btns, text="保存配置", command=self.on_save)
+        self.btn_save.pack(side="left")
 
         for var in [self.v_P, self.v_g, self.v_d, self.v_q]:
             var.trace_add("write", lambda *_: self.refresh_expected_cost())
@@ -1047,7 +1112,6 @@ class PageConfig(ttk.Frame):
         # buttons
         self.btn_save.configure(state=("disabled" if self._readonly else "normal"))
         self.btn_filter.configure(state=("disabled" if self._readonly else "normal"))
-        self.btn_manual.configure(state=("disabled" if self._readonly else "normal"))
 
     def _build_basic(self, parent):
         self._basic_entries = []
@@ -1281,6 +1345,8 @@ class PagePick(ttk.Frame):
 
         self.breadcrumb = ttk.Label(self, text="", foreground="#9ca3af")
         self.breadcrumb.pack(anchor="w")
+        ttk.Button(self, text="返回列表", command=lambda: self.app.show("PageBagList")).place(relx=1.0, y=5, x=-10, anchor="ne")
+        ttk.Button(self, text="返回列表", command=self.back_list).place(relx=1.0, y=5, x=-10, anchor="ne")
 
         ttk.Label(self, text="商品选品（系统筛选 + 手动添加）", font=("Microsoft YaHei UI", 16, "bold")).pack(anchor="w", pady=(0, 10))
 
@@ -1330,8 +1396,6 @@ class PagePick(ttk.Frame):
         ttk.Button(btns, text="全选", command=self.select_all).pack(side="left")
         ttk.Button(btns, text="取消全选", command=self.unselect_all).pack(side="left", padx=6)
         ttk.Button(btns, text="手动添加商品", command=self.manual_add).pack(side="left", padx=18)
-        ttk.Button(btns, text="返回配置", command=self.back_config).pack(side="left")
-        ttk.Button(btns, text="返回列表", command=self.back_list).pack(side="left", padx=6)
 
         self.btn_calc = ttk.Button(btns, text="开始计算", command=self.start_calc)
         self.btn_calc.pack(side="right")
@@ -1563,12 +1627,7 @@ class PageResult(ttk.Frame):
         btns = ttk.Frame(self)
         btns.pack(fill="x", pady=10)
         ttk.Button(btns, text="查看当前配置", command=self.show_config_snapshot).pack(side="left", padx=6)
-        ttk.Button(btns, text="返回选品", command=self.back_pick).pack(side="left", padx=6)
-        ttk.Button(btns, text="返回配置", command=self.back_config).pack(side="left", padx=6)
-        self.btn_online = ttk.Button(btns, text="确认上线", command=self.online)
-        self.btn_online.pack(side="right")
-        self.btn_force = ttk.Button(btns, text="强制上线（通知上级）", command=self.force_online)
-        self.btn_force.pack(side="right", padx=8)
+        ttk.Button(btns, text="返回列表", command=lambda: self.app.show("PageBagList")).pack(side="right")
 
         self.note = ttk.Label(self, text="", foreground="#9ca3af")
         self.note.pack(anchor="w")
@@ -1612,24 +1671,13 @@ class PageResult(ttk.Frame):
         if probs:
             if profit_rate >= cfg.g - 1e-12:
                 self.banner.configure(bg="#1f6f3c", fg="white", text=f"✅ 预计利润率 {profit_rate * 100:.2f}% 达标（目标 {cfg.g * 100:.0f}%）")
-                self.btn_online.configure(state="normal")
-                self.btn_force.configure(state="disabled")
-                self.note.configure(text="允许正常上线。")
+                self.note.configure(text="请点击「查看当前配置」确认后再上线。")
             else:
                 self.banner.configure(bg="#8a1c1c", fg="white", text=f"⚠️ 预计利润率 {profit_rate * 100:.2f}% 低于目标 {cfg.g * 100:.0f}%")
-                self.btn_online.configure(state="disabled")
-                self.btn_force.configure(state="normal")
-                self.note.configure(text="未达标也可强制上线（将通知上级审批）。")
+                self.note.configure(text="未达标仅可在「查看当前配置」弹窗中选择强制上线。")
         else:
             self.banner.configure(bg="#8a1c1c", fg="white", text="❌ 缺少最终概率，请返回选品页完成计算。")
-            self.btn_online.configure(state="disabled")
-            self.btn_force.configure(state="disabled")
             self.note.configure(text="需先完成计算后再决定上线。")
-
-        if probs and not bag.config_confirmed:
-            self.btn_online.configure(state="disabled")
-            self.btn_force.configure(state="disabled")
-            self.note.configure(text="需先点击「查看当前配置」并确认已阅读后，才能执行上线/强制上线。")
 
     def on_click(self, event):
         # 点击“移除”
@@ -1653,25 +1701,6 @@ class PageResult(ttk.Frame):
         bag.config_confirmed = False
         messagebox.showinfo("已移除", "已移除商品，请返回选品页重新计算。")
         self.on_show()
-
-    def back_pick(self):
-        bag = self.app.ensure_current()
-        bag.calc_ok = False
-        bag.adapt_triggered = False
-        bag.adapt_success = False
-        bag.final_probs = {}
-        bag.config_confirmed = False
-        self.app.show("PagePick")
-
-    def back_config(self):
-        bag = self.app.ensure_current()
-        bag.calc_ok = False
-        bag.adapt_triggered = False
-        bag.adapt_success = False
-        bag.final_probs = {}
-        bag.config_confirmed = False
-        self.app.frames["PageConfig"].set_readonly(False)
-        self.app.show("PageConfig")
 
     def online(self):
         bag = self.app.ensure_current()
@@ -1710,7 +1739,13 @@ class PageResult(ttk.Frame):
             messagebox.showwarning("提示", "请先完成配置。")
             return
 
-        SnapshotDialog(self, self.app, bag, on_confirm=self.on_show)
+        SnapshotDialog(self, self.app, bag, allow_actions=True, on_state_change=self.on_state_change)
+
+    def on_state_change(self):
+        if self.app.ensure_current().status in ("已上线", "待审批"):
+            self.app.show("PageBagList")
+        else:
+            self.on_show()
 
 # -------------------------------
 # main
