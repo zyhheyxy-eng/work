@@ -793,6 +793,33 @@ class ConfigPopup(tk.Toplevel):
         lvl_line = " / ".join([f"{LEVEL_NAME[k]}: {level_counts.get(k,0)}" for k in LEVELS])
         ttk.Label(summary, text=f"等级分布：{lvl_line}").grid(row=0, column=1, sticky="w", pady=2)
 
+        # 按等级商品明细（只读）
+        detail = ttk.Labelframe(wrapper, text="按等级查看已选商品（只读，仅用于核对）", padding=10)
+        detail.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
+        detail.columnconfigure(0, weight=1)
+        wrapper.rowconfigure(2, weight=1)
+
+        tab = ttk.Frame(detail)
+        tab.pack(anchor="w", pady=(0, 6))
+        self.level_var = tk.StringVar(value="L")
+        for lvl in LEVELS:
+            ttk.Radiobutton(tab, text=LEVEL_NAME[lvl], value=lvl, variable=self.level_var, command=self._refresh_level_view).pack(side="left", padx=(0,6))
+
+        cols = ("name", "level", "stock", "cost", "prob", "status")
+        self.tree_detail = ttk.Treeview(detail, columns=cols, show="headings", height=7)
+        headers = [
+            ("name", "游戏名", 320, "w"),
+            ("level", "等级", 80, "center"),
+            ("stock", "库存", 80, "center"),
+            ("cost", "成本", 90, "e"),
+            ("prob", "最终概率", 110, "e"),
+            ("status", "状态提示", 160, "center"),
+        ]
+        for c, t, w, a in headers:
+            self.tree_detail.heading(c, text=t)
+            self.tree_detail.column(c, width=w, anchor=a)
+        self.tree_detail.pack(fill="both", expand=True)
+
         # 动作按钮
         btns = ttk.Frame(self, padding=12)
         btns.pack(fill="x")
@@ -803,7 +830,42 @@ class ConfigPopup(tk.Toplevel):
         self.btn_force = ttk.Button(btns, text="强制上线（通知上级）", command=self._force_online)
         self.btn_force.pack(side="right", padx=8)
 
+        self._refresh_level_view()
         self._update_action_state()
+
+    def _refresh_level_view(self):
+        if not hasattr(self, "tree_detail"):
+            return
+        bag = self.bag
+        cfg = bag.cfg
+        selected = [it for it in self.app.catalog if it.id in bag.selected_ids]
+        probs = bag.final_probs or {}
+        lvl = self.level_var.get() if hasattr(self, "level_var") else "L"
+        now = dt.datetime.now()
+        self.tree_detail.delete(*self.tree_detail.get_children())
+
+        rows = []
+        for it in selected:
+            if it.level != lvl:
+                continue
+            p = probs.get(it.id, 0.0)
+            stock_txt = str(it.stock)
+            status = ""
+            if it.stock < max(1, it.alarm):
+                status = "库存低"
+            if it.discount_end:
+                if it.discount_end <= now:
+                    status = (status + " / " if status else "") + "折扣已结束"
+                elif (it.discount_end - now).total_seconds() <= 24*3600:
+                    status = (status + " / " if status else "") + "折扣即将结束"
+            rows.append((it.name, LEVEL_BADGE[it.level], stock_txt, f"{it.cost:.2f}", f"{p*100:.4f}%" if p>0 else "-", status or "正常"))
+
+        rows.sort(key=lambda x: (-float(x[4].rstrip('%')) if x[4].endswith('%') else 0.0, x[0]))
+        for row in rows[:120]:
+            self.tree_detail.insert("", "end", values=row)
+
+        if not rows:
+            self.tree_detail.insert("", "end", values=("当前等级无商品", "-", "-", "-", "-", "-"))
 
     def _update_action_state(self):
         bag = self.bag
