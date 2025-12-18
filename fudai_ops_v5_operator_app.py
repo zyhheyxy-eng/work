@@ -276,6 +276,10 @@ def parse_dt(s: str, field_name: str) -> dt.datetime:
 def fmt_dt(t: dt.datetime) -> str:
     return t.strftime("%Y-%m-%d %H:%M")
 
+def _safe_kw(val: str, placeholder: str) -> str:
+    val = (val or "").strip()
+    return "" if val == placeholder else val
+
 # -------------------------------
 # GUI App：列表页 + 3页 + 1提醒弹窗
 # -------------------------------
@@ -319,6 +323,23 @@ class App(tk.Tk):
 
         self.show("PageBagList")
         self.after(1000, self._tick_minutely)
+
+    def apply_placeholder(self, entry: tk.Entry, var: tk.StringVar, placeholder: str):
+        entry.configure(foreground="#9ca3af")
+        var.set(placeholder)
+
+        def focus_in(_):
+            if var.get() == placeholder:
+                var.set("")
+                entry.configure(foreground="#111827")
+
+        def focus_out(_):
+            if not var.get().strip():
+                var.set(placeholder)
+                entry.configure(foreground="#9ca3af")
+
+        entry.bind("<FocusIn>", focus_in)
+        entry.bind("<FocusOut>", focus_out)
 
     # ---------- bag helpers ----------
     def _next_bag_id(self) -> str:
@@ -506,9 +527,10 @@ class ManualAddDialog(tk.Toplevel):
 
         ttk.Label(top, text="（可按 Ctrl/Shift 多选后点击旁边“确认添加”）", foreground="#6b7280").grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
-        self.tree = ttk.Treeview(self, columns=("name", "price", "cost", "stock", "status"), show="headings", height=14, selectmode="extended")
+        self.tree = ttk.Treeview(self, columns=("id", "name", "price", "cost", "stock", "status"), show="headings", height=14, selectmode="extended")
         for c, t, w in [
-            ("name", "游戏名", 360),
+            ("id", "ID", 70),
+            ("name", "游戏名", 320),
             ("price", "售价", 90),
             ("cost", "成本", 90),
             ("stock", "库存", 80),
@@ -536,9 +558,9 @@ class ManualAddDialog(tk.Toplevel):
         kw = self.v_search.get().strip().lower()
         self.tree.delete(*self.tree.get_children())
         for it in self.app.catalog:
-            if kw and kw not in it.name.lower():
+            if kw and kw not in it.name.lower() and kw not in f"{it.id}".lower():
                 continue
-            self.tree.insert("", "end", iid=str(it.id), values=(it.name, f"{it.price:.2f}", f"{it.cost:.2f}", str(it.stock), it.discount_status))
+            self.tree.insert("", "end", iid=str(it.id), values=(it.id, it.name, f"{it.price:.2f}", f"{it.cost:.2f}", str(it.stock), it.discount_status))
         self._refresh_cost_check()
 
     def _refresh_cost_check(self):
@@ -932,8 +954,9 @@ class PageBagList(ttk.Frame):
 
         ttk.Label(top, text="搜索：").pack(side="right", padx=(6, 4))
         self.v_search = tk.StringVar(value="")
-        ent = ttk.Entry(top, textvariable=self.v_search, width=26)
+        ent = ttk.Entry(top, textvariable=self.v_search, width=26, justify="left")
         ent.pack(side="right")
+        self.app.apply_placeholder(ent, self.v_search, "搜索 ID/名称")
         ent.bind("<KeyRelease>", lambda e: self.refresh())
 
         ttk.Label(top, text="状态：").pack(side="right", padx=(16, 4))
@@ -979,7 +1002,7 @@ class PageBagList(ttk.Frame):
         st = self.v_status.get()
         if st != "全部" and bag.status != st:
             return False
-        kw = self.v_search.get().strip().lower()
+        kw = _safe_kw(self.v_search.get(), "搜索 ID/名称").lower()
         if kw:
             name = bag.cfg.bag_name if bag.cfg else ""
             if kw not in (name or "").lower() and kw not in bag.bag_id.lower():
@@ -1101,8 +1124,10 @@ class PageConfig(ttk.Frame):
         self.v_ratio = tk.StringVar(value="80")
 
         now = dt.datetime.now()
-        self.v_up = tk.StringVar(value=fmt_dt(now + dt.timedelta(hours=1)))
-        self.v_down = tk.StringVar(value=fmt_dt(now + dt.timedelta(days=7)))
+        self.v_up_date = tk.StringVar(value=f"{(now + dt.timedelta(hours=1)):%Y-%m-%d}")
+        self.v_down_date = tk.StringVar(value=f"{(now + dt.timedelta(days=7)):%Y-%m-%d}")
+        self.v_up_time = tk.StringVar(value=f"{(now + dt.timedelta(hours=1)):%H:%M}")
+        self.v_down_time = tk.StringVar(value=f"{(now + dt.timedelta(days=7)):%H:%M}")
 
         self.v_pity_on = tk.BooleanVar(value=True)
         self.v_X = tk.StringVar(value="100")
@@ -1168,8 +1193,10 @@ class PageConfig(ttk.Frame):
             self.v_d.set(f"{cfg.d:.2f}")
             self.v_q.set(str(int(round(cfg.q * 100))))
             self.v_ratio.set(str(int(round(cfg.price_ratio * 100))))
-            self.v_up.set(fmt_dt(cfg.up_time))
-            self.v_down.set(fmt_dt(cfg.down_time))
+            self.v_up_date.set(cfg.up_time.strftime("%Y-%m-%d"))
+            self.v_down_date.set(cfg.down_time.strftime("%Y-%m-%d"))
+            self.v_up_time.set(cfg.up_time.strftime("%H:%M"))
+            self.v_down_time.set(cfg.down_time.strftime("%H:%M"))
             self.v_pity_on.set(bool(cfg.pity_on))
             self.v_X.set(str(cfg.X or ""))
             for k in LEVELS:
@@ -1204,36 +1231,55 @@ class PageConfig(ttk.Frame):
 
     def _build_basic(self, parent):
         self._basic_entries = []
-        ttk.Label(parent, text="基础配置（含上下架时间）", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(0, 6))
+        base = ttk.Labelframe(parent, text="基础配置", padding=8)
+        base.pack(fill="x", pady=(0, 8))
 
-        def row(label, var, hint=""):
-            r = ttk.Frame(parent)
+        def row(container, label, var, hint="", extra=None):
+            r = ttk.Frame(container)
             r.pack(fill="x", pady=4)
-            ttk.Label(r, text=label, width=20).pack(side="left")
+            ttk.Label(r, text=label, width=18).pack(side="left")
             ent = ttk.Entry(r, textvariable=var, width=18)
             ent.pack(side="left")
             self._basic_entries.append(ent)
+            if extra:
+                extra(r)
             if hint:
                 ttk.Label(r, text=hint, foreground="#9ca3af").pack(side="left", padx=8)
 
-        row("福袋名称（≤30字）", self.v_name)
-        row("单抽标价 P（元）", self.v_P)
-        row("目标利润率 g（%）", self.v_g, "如 30")
-        row("十连折扣系数 d", self.v_d, "如 0.97=97折")
-        row("十连抽占比 q（%）", self.v_q, "如 60")
-        row("售价筛选比例（%）", self.v_ratio, "商品售价≥P×比例")
-        row("上架时间", self.v_up, "YYYY-MM-DD HH:MM")
-        row("下架时间", self.v_down, "需晚于上架时间")
+        row(base, "福袋名称（≤30字）", self.v_name)
+        row(base, "单抽标价 P（元）", self.v_P)
+        row(base, "目标利润率 g（%）", self.v_g, "如 30")
+        row(base, "十连折扣系数 d", self.v_d, "如 0.97=97折")
 
-        ttk.Label(parent, text="保底设置", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(12, 6))
-        self.cb_pity = ttk.Checkbutton(parent, text="开启：累计 X 抽必出传说", variable=self.v_pity_on, command=self._toggle_x)
+        # 上下架时间：日期+时间选择
+        def time_widgets(r, date_var, time_var):
+            ttk.Entry(r, textvariable=date_var, width=12).pack(side="left", padx=(4, 0))
+            times = [f"{h:02d}:{m:02d}" for h in range(24) for m in (0,30)]
+            cb = ttk.Combobox(r, textvariable=time_var, values=times, width=8, state="readonly")
+            cb.pack(side="left", padx=(4, 0))
+
+        row(base, "上架时间", self.v_up_date, "选择日期+时间", extra=lambda r: time_widgets(r, self.v_up_date, self.v_up_time))
+        row(base, "下架时间", self.v_down_date, "需晚于上架时间", extra=lambda r: time_widgets(r, self.v_down_date, self.v_down_time))
+
+        ttk.Label(base, text="关键配置", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
+        row(base, "十连抽占比 q（%）", self.v_q, "如 60")
+        row(base, "售价筛选比例（%）", self.v_ratio, "商品售价≥P×比例")
+
+        ttk.Label(base, text="保底设置", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
+        self.cb_pity = ttk.Checkbutton(base, text="开启：累计 X 抽必出传说", variable=self.v_pity_on, command=self._toggle_x)
         self.cb_pity.pack(anchor="w")
-        rx = ttk.Frame(parent)
+        rx = ttk.Frame(base)
         rx.pack(fill="x", pady=4)
-        ttk.Label(rx, text="保底阈值 X", width=20).pack(side="left")
+        ttk.Label(rx, text="保底阈值 X", width=18).pack(side="left")
         self.ent_X = ttk.Entry(rx, textvariable=self.v_X, width=18)
         self.ent_X.pack(side="left")
         self._basic_entries.append(self.ent_X)
+
+        hint = ("自动筛选与计算逻辑（只读）：\n"
+                "1) 过滤禁用/黑名单/非Steam/DLC/售价低于最低价/售价低于P×比例的商品；库存需>0。\n"
+                "2) 按成本范围匹配等级，生成等级概率与成本区间；折扣结束商品会自动剔除。\n"
+                "3) 计算期望成本并对未达标情况尝试自适应调权；结果页根据最终概率计算利润率。")
+        ttk.Label(parent, text=hint, foreground="#6b7280", wraplength=420, justify="left").pack(anchor="w", pady=(4,0))
 
     def _toggle_x(self):
         self.ent_X.configure(state=("normal" if (self.v_pity_on.get() and not self._readonly) else "disabled"))
@@ -1297,8 +1343,8 @@ class PageConfig(ttk.Frame):
         q = self._parse_float(self.v_q.get(), "十连抽占比 q(%)", lo=0.0, hi=100.0) / 100.0
         ratio = self._parse_float(self.v_ratio.get(), "售价筛选比例(%)", lo=0.0, hi=200.0) / 100.0
 
-        up_time = parse_dt(self.v_up.get(), "上架时间")
-        down_time = parse_dt(self.v_down.get(), "下架时间")
+        up_time = parse_dt(f"{self.v_up_date.get()} {self.v_up_time.get()}", "上架时间")
+        down_time = parse_dt(f"{self.v_down_date.get()} {self.v_down_time.get()}", "下架时间")
         if down_time <= up_time:
             raise ValueError("下架时间必须晚于上架时间")
 
@@ -1457,15 +1503,17 @@ class PagePick(ttk.Frame):
 
         ttk.Label(top, text="搜索：").pack(side="right", padx=(6, 4))
         self.v_search = tk.StringVar(value="")
-        ent = ttk.Entry(top, textvariable=self.v_search, width=24)
+        ent = ttk.Entry(top, textvariable=self.v_search, width=24, justify="left")
         ent.pack(side="right")
+        self.app.apply_placeholder(ent, self.v_search, "搜索 ID/名称")
         ent.bind("<KeyRelease>", lambda e: self.refresh())
 
-        self.tree = ttk.Treeview(self, columns=("checked", "name", "level", "stock", "price", "cost", "alarm", "disc", "src"),
+        self.tree = ttk.Treeview(self, columns=("checked", "id", "name", "level", "stock", "price", "cost", "alarm", "disc", "src"),
                                  show="headings", height=18)
         for c, t, w, a in [
             ("checked", "选择", 60, "center"),
-            ("name", "游戏名", 260, "w"),
+            ("id", "ID", 70, "center"),
+            ("name", "游戏名", 230, "w"),
             ("level", "等级", 90, "center"),
             ("stock", "库存", 90, "center"),
             ("price", "售价", 90, "e"),
@@ -1505,8 +1553,8 @@ class PagePick(ttk.Frame):
     def _matches(self, it: Item) -> bool:
         if not self.level_vars.get(it.level, tk.BooleanVar(value=True)).get():
             return False
-        kw = self.v_search.get().strip().lower()
-        if kw and kw not in it.name.lower():
+        kw = _safe_kw(self.v_search.get(), "搜索 ID/名称").lower()
+        if kw and kw not in it.name.lower() and kw not in f"{it.id}".lower():
             return False
         sf = self.v_stock_filter.get()
         if sf == "正常库存" and self._is_low_stock(it):
@@ -1550,7 +1598,7 @@ class PagePick(ttk.Frame):
             src = "手动添加" if it.id in bag.manual_added_ids else "系统筛选"
 
             self.tree.insert("", "end", iid=str(it.id),
-                             values=(checked, it.name, LEVEL_BADGE[it.level], stock, f"{it.price:.2f}", f"{it.cost:.2f}", str(it.alarm), disc, src))
+                             values=(checked, it.id, it.name, LEVEL_BADGE[it.level], stock, f"{it.price:.2f}", f"{it.cost:.2f}", str(it.alarm), disc, src))
 
         self.status.configure(text=f"当前显示：{len(shown)} | 已勾选：{len(bag.selected_ids)}（活动结束商品会自动剔除）")
 
