@@ -16,10 +16,11 @@
 
 from __future__ import annotations
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 import datetime as dt
+import calendar as cal
 import random
 
 # -------------------------------
@@ -822,10 +823,11 @@ class ConfigPopup(tk.Toplevel):
 
         media = ttk.Frame(summary)
         media.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6,0))
-        ttk.Label(media, text=f"封面图：{bag.cfg.bag_name}").pack(side="left", padx=(0,12))
-        ttk.Label(media, text=f"背景图：{self.app.settings.get('bg_hint','未上传')}").pack(side="left", padx=(0,12))
-        ttk.Label(media, text=f"广告图：{self.app.settings.get('ad_hint','未上传')}").pack(side="left", padx=(0,12))
-        ttk.Label(media, text=f"分销选择：{self.v_distribution.get() or '—'}").pack(side="left", padx=(0,12))
+        ttk.Label(media, text=f"封面图：{bag.cover_path or '未上传'}").pack(side="left", padx=(0,12))
+        ttk.Label(media, text=f"背景图：{bag.bg_path or '未上传'}").pack(side="left", padx=(0,12))
+        ttk.Label(media, text=f"广告图：{bag.ad_path or '未上传'}").pack(side="left", padx=(0,12))
+        ttk.Label(media, text=f"分销选择：{bag.distribution or '—'}").pack(side="left", padx=(0,12))
+        ttk.Label(media, text=f"备注：{bag.remark or '—'}").pack(side="left", padx=(0,12))
 
         # 按等级商品明细（只读）
         detail = ttk.Labelframe(wrapper, text="按等级查看已选商品（只读，仅用于核对）", padding=10)
@@ -1143,8 +1145,6 @@ class PageConfig(ttk.Frame):
         now = dt.datetime.now()
         self.v_up_date = tk.StringVar(value=f"{(now + dt.timedelta(days=1)):%Y-%m-%d}")
         self.v_down_date = tk.StringVar(value=f"{(now + dt.timedelta(days=7)):%Y-%m-%d}")
-        self.v_up_time = tk.StringVar(value=f"{(now + dt.timedelta(hours=1)):%H:%M}")
-        self.v_down_time = tk.StringVar(value=f"{(now + dt.timedelta(days=7)):%H:%M}")
 
         self.v_pity_on = tk.BooleanVar(value=True)
         self.v_X = tk.StringVar(value="100")
@@ -1212,17 +1212,25 @@ class PageConfig(ttk.Frame):
             self.v_ratio.set(str(int(round(cfg.price_ratio * 100))))
             self.v_up_date.set(cfg.up_time.strftime("%Y-%m-%d"))
             self.v_down_date.set(cfg.down_time.strftime("%Y-%m-%d"))
-            self.v_up_time.set(cfg.up_time.strftime("%H:%M"))
-            self.v_down_time.set(cfg.down_time.strftime("%H:%M"))
             self.v_pity_on.set(bool(cfg.pity_on))
             self.v_X.set(str(cfg.X or ""))
             for k in LEVELS:
                 self.v_p[k].set(str(int(round(cfg.p_k[k] * 100))))
                 self.v_lo[k].set(str(cfg.cost_ranges[k].lo))
                 self.v_hi[k].set(str(cfg.cost_ranges[k].hi))
+            self.v_cover.set(bag.cover_path)
+            self.v_bg.set(bag.bg_path)
+            self.v_ad.set(bag.ad_path)
+            self.v_distribution.set(bag.distribution)
+            self.v_remark.set(bag.remark)
         else:
             if not self.v_name.get():
                 self.v_name.set(f"{dt.datetime.now():%Y%m%d} 福袋")
+            self.v_cover.set(bag.cover_path)
+            self.v_bg.set(bag.bg_path)
+            self.v_ad.set(bag.ad_path)
+            self.v_distribution.set(bag.distribution)
+            self.v_remark.set(bag.remark)
 
         self._apply_readonly_state()
         self.refresh_expected_cost()
@@ -1307,26 +1315,73 @@ class PageConfig(ttk.Frame):
     def _open_date_picker(self, var: tk.StringVar):
         top = tk.Toplevel(self)
         top.title("选择日期")
-        top.geometry("260x320")
+        top.geometry("300x320")
         top.resizable(False, False)
 
-        today = dt.date.today()
-        days = [today + dt.timedelta(days=i) for i in range(0, 180)]
-        lb = tk.Listbox(top)
-        for d in days:
-            lb.insert("end", d.strftime("%Y-%m-%d"))
-        lb.pack(fill="both", expand=True, padx=8, pady=8)
+        try:
+            current = dt.datetime.strptime(var.get(), "%Y-%m-%d").date()
+        except Exception:
+            current = dt.date.today()
 
-        def choose(evt=None):
-            sel = lb.curselection()
-            if not sel:
+        state = {"year": current.year, "month": current.month}
+
+        header = ttk.Frame(top)
+        header.pack(fill="x", pady=4)
+        lbl = ttk.Label(header, text="")
+        lbl.pack(side="left", padx=8)
+
+        def render():
+            lbl.configure(text=f"{state['year']}年{state['month']:02d}月")
+            for btn in btns:
+                btn.destroy()
+            btns.clear()
+            cal_mat = cal.monthcalendar(state["year"], state["month"])
+            for week in cal_mat:
+                row = ttk.Frame(grid)
+                row.pack(fill="x")
+                for d in week:
+                    txt = f"{d:02d}" if d else ""
+                    btn = ttk.Button(row, text=txt, width=4,
+                                     command=(lambda day=d: choose_day(day)) if d else None)
+                    btn.pack(side="left", expand=True, padx=1, pady=1)
+                    btns.append(btn)
+
+        def prev_month():
+            if state["month"] == 1:
+                state["month"] = 12
+                state["year"] -= 1
+            else:
+                state["month"] -= 1
+            render()
+
+        def next_month():
+            if state["month"] == 12:
+                state["month"] = 1
+                state["year"] += 1
+            else:
+                state["month"] += 1
+            render()
+
+        ttk.Button(header, text="<", command=prev_month).pack(side="left", padx=(8, 4))
+        ttk.Button(header, text=">", command=next_month).pack(side="left")
+
+        grid = ttk.Frame(top)
+        grid.pack(fill="both", expand=True, padx=6, pady=6)
+        btns: list[tk.Widget] = []
+
+        def choose_day(day: int):
+            if day <= 0:
                 return
-            val = lb.get(sel[0])
+            val = dt.date(state["year"], state["month"], day).strftime("%Y-%m-%d")
             var.set(val)
             top.destroy()
 
-        lb.bind("<Double-1>", choose)
-        ttk.Button(top, text="确认", command=choose).pack(pady=6)
+        render()
+
+    def _upload_file(self, var: tk.StringVar):
+        path = filedialog.askopenfilename(title="选择文件")
+        if path:
+            var.set(path)
 
     def _build_levels(self, parent):
         self._range_entries = []
@@ -1373,6 +1428,16 @@ class PageConfig(ttk.Frame):
             self._range_entries.extend([e_lo, e_hi])
 
         ttk.Label(box, text="库存筛选：库存需大于0；低于报警值在选品页提示。", foreground="#6b7280").pack(anchor="w", pady=(6,0))
+
+        ttk.Label(box, text="保底设置", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
+        self.cb_pity = ttk.Checkbutton(box, text="开启：累计 X 抽必出传说", variable=self.v_pity_on, command=self._toggle_x)
+        self.cb_pity.pack(anchor="w")
+        rx = ttk.Frame(box)
+        rx.pack(fill="x", pady=4)
+        ttk.Label(rx, text="保底阈值 X", width=18).pack(side="left")
+        self.ent_X = ttk.Entry(rx, textvariable=self.v_X, width=18)
+        self.ent_X.pack(side="left")
+        self._range_entries.append(self.ent_X)
 
     def _parse_float(self, s: str, name: str, lo=None, hi=None) -> float:
         v = float(str(s).strip())
@@ -1479,6 +1544,11 @@ class PageConfig(ttk.Frame):
             return
         bag = self.app.ensure_current()
         bag.cfg = cfg
+        bag.cover_path = self.v_cover.get().strip()
+        bag.bg_path = self.v_bg.get().strip()
+        bag.ad_path = self.v_ad.get().strip()
+        bag.distribution = self.v_distribution.get().strip()
+        bag.remark = self.v_remark.get().strip()
         messagebox.showinfo("已保存", "配置已保存，已返回福袋列表。")
         self.app.show("PageBagList")
 
