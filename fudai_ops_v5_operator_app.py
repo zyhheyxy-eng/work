@@ -1141,6 +1141,7 @@ class PageConfig(ttk.Frame):
         self.v_ad = tk.StringVar(value="")
         self.v_distribution = tk.StringVar(value="")
         self.v_remark = tk.StringVar(value="")
+        self.v_manual_state = tk.StringVar(value="未上线")
 
         now = dt.datetime.now()
         self.v_up_date = tk.StringVar(value=f"{(now + dt.timedelta(days=1)):%Y-%m-%d}")
@@ -1223,6 +1224,7 @@ class PageConfig(ttk.Frame):
             self.v_ad.set(bag.ad_path)
             self.v_distribution.set(bag.distribution)
             self.v_remark.set(bag.remark)
+            self.v_manual_state.set(bag.status if bag.status in ("已上线", "已下架") else "未上线")
         else:
             if not self.v_name.get():
                 self.v_name.set(f"{dt.datetime.now():%Y%m%d} 福袋")
@@ -1231,6 +1233,7 @@ class PageConfig(ttk.Frame):
             self.v_ad.set(bag.ad_path)
             self.v_distribution.set(bag.distribution)
             self.v_remark.set(bag.remark)
+            self.v_manual_state.set(bag.status if bag.status in ("已上线", "已下架") else "未上线")
 
         self._apply_readonly_state()
         self.refresh_expected_cost()
@@ -1248,6 +1251,9 @@ class PageConfig(ttk.Frame):
         # pity controls
         self.cb_pity.configure(state=state)
         self.ent_X.configure(state=("disabled" if (self._readonly or not self.v_pity_on.get()) else "normal"))
+
+        if hasattr(self, "btn_apply_state"):
+            self.btn_apply_state.configure(state=("disabled" if self._readonly else "normal"))
 
         # buttons
         self.btn_save_top.configure(state=("disabled" if self._readonly else "normal"))
@@ -1453,6 +1459,14 @@ class PageConfig(ttk.Frame):
         ttk.Button(rd, text="选择", command=lambda: self._open_date_picker(self.v_down_date)).pack(side="left", padx=4)
         self._range_entries.append(ent_dn)
 
+        ttk.Label(box, text="上下架控制（人工）", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
+        manual = ttk.Frame(box)
+        manual.pack(fill="x", pady=2)
+        ttk.Radiobutton(manual, text="上线", value="已上线", variable=self.v_manual_state).pack(side="left")
+        ttk.Radiobutton(manual, text="下线", value="已下架", variable=self.v_manual_state).pack(side="left", padx=6)
+        self.btn_apply_state = ttk.Button(manual, text="立即应用", command=self._apply_manual_state)
+        self.btn_apply_state.pack(side="left", padx=8)
+
     def _parse_float(self, s: str, name: str, lo=None, hi=None) -> float:
         v = float(str(s).strip())
         if lo is not None and v < lo:
@@ -1468,6 +1482,16 @@ class PageConfig(ttk.Frame):
         if hi is not None and v > hi:
             raise ValueError(f"{name} 不能大于 {hi}")
         return v
+
+    def _apply_manual_state(self):
+        bag = self.app.ensure_current()
+        target = self.v_manual_state.get()
+        if target not in ("已上线", "已下架"):
+            messagebox.showwarning("无法切换", "请选择上线或下线。")
+            return
+        bag.status = target
+        messagebox.showinfo("已更新", f"状态已切换为：{target}（立即生效，独立于时间配置）。")
+        self.app.show("PageBagList")
 
 
     def _build_config(self) -> Config:
