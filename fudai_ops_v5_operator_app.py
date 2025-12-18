@@ -815,6 +815,13 @@ class ConfigPopup(tk.Toplevel):
         lvl_line = " / ".join([f"{LEVEL_NAME[k]}: {level_counts.get(k,0)}" for k in LEVELS])
         ttk.Label(summary, text=f"等级分布：{lvl_line}").grid(row=0, column=1, sticky="w", pady=2)
 
+        media = ttk.Frame(summary)
+        media.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(6,0))
+        ttk.Label(media, text=f"封面图：{bag.cfg.bag_name}").pack(side="left", padx=(0,12))
+        ttk.Label(media, text=f"背景图：{self.app.settings.get('bg_hint','未上传')}").pack(side="left", padx=(0,12))
+        ttk.Label(media, text=f"广告图：{self.app.settings.get('ad_hint','未上传')}").pack(side="left", padx=(0,12))
+        ttk.Label(media, text=f"分销选择：{self.v_distribution.get() or '—'}").pack(side="left", padx=(0,12))
+
         # 按等级商品明细（只读）
         detail = ttk.Labelframe(wrapper, text="按等级查看已选商品（只读，仅用于核对）", padding=10)
         detail.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(8, 0))
@@ -1122,6 +1129,11 @@ class PageConfig(ttk.Frame):
         self.v_d = tk.StringVar(value="0.95")
         self.v_q = tk.StringVar(value="60")
         self.v_ratio = tk.StringVar(value="80")
+        self.v_cover = tk.StringVar(value="")
+        self.v_bg = tk.StringVar(value="")
+        self.v_ad = tk.StringVar(value="")
+        self.v_distribution = tk.StringVar(value="")
+        self.v_remark = tk.StringVar(value="")
 
         now = dt.datetime.now()
         self.v_up_date = tk.StringVar(value=f"{(now + dt.timedelta(hours=1)):%Y-%m-%d}")
@@ -1286,10 +1298,24 @@ class PageConfig(ttk.Frame):
 
     def _build_levels(self, parent):
         self._range_entries = []
-        ttk.Label(parent, text="等级与成本范围（数值区间）", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(0, 6))
-        ttk.Label(parent, text="系统预期成本=参考值（只读）。建议你填写的成本区间包含参考值。", foreground="#9ca3af").pack(anchor="w", pady=(0, 8))
+        box = ttk.Labelframe(parent, text="关键配置", padding=8)
+        box.pack(fill="both", expand=True)
 
-        header = ttk.Frame(parent)
+        top = ttk.Frame(box)
+        top.pack(fill="x", pady=(0, 6))
+        ttk.Label(top, text="十连抽占比 q（%）", width=18).pack(side="left")
+        ent_q = ttk.Entry(top, textvariable=self.v_q, width=10)
+        ent_q.pack(side="left")
+        self._range_entries.append(ent_q)
+        ttk.Label(top, text="售价筛选比例（%）", width=16).pack(side="left", padx=(16, 4))
+        ent_ratio = ttk.Entry(top, textvariable=self.v_ratio, width=10)
+        ent_ratio.pack(side="left")
+        self._range_entries.append(ent_ratio)
+
+        ttk.Label(box, text="等级与成本范围（数值区间）", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
+        ttk.Label(box, text="系统预期成本=参考值（只读）。建议填写区间包含参考值。", foreground="#9ca3af").pack(anchor="w", pady=(0, 6))
+
+        header = ttk.Frame(box)
         header.pack(fill="x", pady=(0, 4))
         ttk.Label(header, text="等级", width=10).grid(row=0, column=0, sticky="w")
         ttk.Label(header, text="概率(%)", width=10).grid(row=0, column=1, sticky="w")
@@ -1299,7 +1325,7 @@ class PageConfig(ttk.Frame):
         ttk.Label(header, text="上限", width=8).grid(row=0, column=5, sticky="w")
 
         for lvl in LEVELS:
-            r = ttk.Frame(parent)
+            r = ttk.Frame(box)
             r.pack(fill="x", pady=2)
             ttk.Label(r, text=LEVEL_NAME[lvl], width=10).grid(row=0, column=0, sticky="w")
             e_p = ttk.Entry(r, textvariable=self.v_p[lvl], width=8)
@@ -1314,6 +1340,16 @@ class PageConfig(ttk.Frame):
             ttk.Label(r, text="~").grid(row=0, column=4, sticky="w")
             e_hi.grid(row=0, column=5, sticky="w")
             self._range_entries.extend([e_lo, e_hi])
+
+        ttk.Label(box, text="库存筛选：库存需大于0；可在选品页按报警值提示低库存。", foreground="#6b7280").pack(anchor="w", pady=(6,0))
+
+        extra = ttk.Labelframe(box, text="素材与分销", padding=8)
+        extra.pack(fill="x", pady=(10, 0))
+        for label, var in [("封面图", self.v_cover), ("背景图", self.v_bg), ("广告图", self.v_ad), ("分销选择", self.v_distribution), ("备注", self.v_remark)]:
+            row = ttk.Frame(extra)
+            row.pack(fill="x", pady=3)
+            ttk.Label(row, text=f"{label}：", width=10).pack(side="left")
+            ttk.Entry(row, textvariable=var).pack(side="left", fill="x", expand=True)
 
     def _parse_float(self, s: str, name: str, lo=None, hi=None) -> float:
         v = float(str(s).strip())
