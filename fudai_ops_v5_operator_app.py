@@ -1281,14 +1281,20 @@ class PageConfig(ttk.Frame):
         row(base, "目标利润率 g（%）", self.v_g, "如 30")
         row(base, "十连折扣系数 d", self.v_d, "如 0.97=97折")
 
-        # 上下架时间：日期+时间选择
-        def time_widgets(r, date_var, time_var):
-            ttk.Entry(r, textvariable=date_var, width=12).pack(side="left", padx=(4, 0))
-            btn = ttk.Button(r, text="选择日期", command=lambda v=date_var: self._open_date_picker(v))
-            btn.pack(side="left", padx=(4, 0))
+        # 上下架时间：单行输入框 + 日历
+        def date_row(label, var, hint=""):
+            r = ttk.Frame(base)
+            r.pack(fill="x", pady=4)
+            ttk.Label(r, text=label, width=18).pack(side="left")
+            ent = ttk.Entry(r, textvariable=var, width=18)
+            ent.pack(side="left")
+            self._basic_entries.append(ent)
+            ttk.Button(r, text="选择日期", command=lambda v=var: self._open_date_picker(v)).pack(side="left", padx=4)
+            if hint:
+                ttk.Label(r, text=hint, foreground="#9ca3af").pack(side="left", padx=8)
 
-        row(base, "上架时间", self.v_up_date, "", extra=lambda r: time_widgets(r, self.v_up_date, None))
-        row(base, "下架时间", self.v_down_date, "需晚于上架", extra=lambda r: time_widgets(r, self.v_down_date, None))
+        date_row("上架时间", self.v_up_date, "")
+        date_row("下架时间", self.v_down_date, "需晚于上架")
 
         media = ttk.Labelframe(parent, text="素材与分销", padding=8)
         media.pack(fill="x", pady=(8, 0))
