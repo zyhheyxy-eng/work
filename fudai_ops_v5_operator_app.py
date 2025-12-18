@@ -1238,6 +1238,7 @@ class PageConfig(ttk.Frame):
         self._apply_readonly_state()
         self.refresh_expected_cost()
         self.refresh_preview()
+        self._refresh_manual_controls()
 
     def _apply_readonly_state(self):
         # entries state
@@ -1252,13 +1253,11 @@ class PageConfig(ttk.Frame):
         self.cb_pity.configure(state=state)
         self.ent_X.configure(state=("disabled" if (self._readonly or not self.v_pity_on.get()) else "normal"))
 
-        if hasattr(self, "btn_apply_state"):
-            self.btn_apply_state.configure(state=("disabled" if self._readonly else "normal"))
-
         # buttons
         self.btn_save_top.configure(state=("disabled" if self._readonly else "normal"))
         self.btn_back_top.configure(state="normal")
         self.btn_filter.configure(state=("disabled" if self._readonly else "normal"))
+        self._refresh_manual_controls()
 
     def _build_basic(self, parent):
         self._basic_entries = []
@@ -1288,7 +1287,7 @@ class PageConfig(ttk.Frame):
             btn = ttk.Button(r, text="选择日期", command=lambda v=date_var: self._open_date_picker(v))
             btn.pack(side="left", padx=(4, 0))
 
-        row(base, "上架时间", self.v_up_date, "选择日期", extra=lambda r: time_widgets(r, self.v_up_date, None))
+        row(base, "上架时间", self.v_up_date, "", extra=lambda r: time_widgets(r, self.v_up_date, None))
         row(base, "下架时间", self.v_down_date, "需晚于上架", extra=lambda r: time_widgets(r, self.v_down_date, None))
 
         media = ttk.Labelframe(parent, text="素材与分销", padding=8)
@@ -1369,6 +1368,10 @@ class PageConfig(ttk.Frame):
 
         grid = ttk.Frame(top)
         grid.pack(fill="both", expand=True, padx=6, pady=6)
+        header_row = ttk.Frame(grid)
+        header_row.pack(fill="x", pady=(0, 4))
+        for w in ["一", "二", "三", "四", "五", "六", "日"]:
+            ttk.Label(header_row, text=w, width=4, anchor="center").pack(side="left", expand=True)
         btns: list[tk.Widget] = []
 
         def choose_day(day: int):
@@ -1441,31 +1444,36 @@ class PageConfig(ttk.Frame):
         self.ent_X.pack(side="left")
         self._range_entries.append(self.ent_X)
 
-        # 上下架日期选择（右侧快捷入口）
-        ttk.Label(box, text="上下架选择（日期）", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
-        rs = ttk.Frame(box)
-        rs.pack(fill="x", pady=2)
-        ttk.Label(rs, text="上架日期", width=12).pack(side="left")
-        ent_up = ttk.Entry(rs, textvariable=self.v_up_date, width=12)
-        ent_up.pack(side="left")
-        ttk.Button(rs, text="选择", command=lambda: self._open_date_picker(self.v_up_date)).pack(side="left", padx=4)
-        self._range_entries.append(ent_up)
-
-        rd = ttk.Frame(box)
-        rd.pack(fill="x", pady=2)
-        ttk.Label(rd, text="下架日期", width=12).pack(side="left")
-        ent_dn = ttk.Entry(rd, textvariable=self.v_down_date, width=12)
-        ent_dn.pack(side="left")
-        ttk.Button(rd, text="选择", command=lambda: self._open_date_picker(self.v_down_date)).pack(side="left", padx=4)
-        self._range_entries.append(ent_dn)
-
-        ttk.Label(box, text="上下架控制（人工）", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
-        manual = ttk.Frame(box)
+        self.manual_frame = ttk.Labelframe(box, text="上下架控制（人工）", padding=6)
+        manual = ttk.Frame(self.manual_frame)
         manual.pack(fill="x", pady=2)
-        ttk.Radiobutton(manual, text="上线", value="已上线", variable=self.v_manual_state).pack(side="left")
-        ttk.Radiobutton(manual, text="下线", value="已下架", variable=self.v_manual_state).pack(side="left", padx=6)
+        self.rb_up = ttk.Radiobutton(manual, text="上线", value="已上线", variable=self.v_manual_state)
+        self.rb_up.pack(side="left")
+        self.rb_down = ttk.Radiobutton(manual, text="下线", value="已下架", variable=self.v_manual_state)
+        self.rb_down.pack(side="left", padx=6)
         self.btn_apply_state = ttk.Button(manual, text="立即应用", command=self._apply_manual_state)
         self.btn_apply_state.pack(side="left", padx=8)
+
+    def _refresh_manual_controls(self):
+        if not hasattr(self, "manual_frame"):
+            return
+        bag = self.app.ensure_current()
+        allowed = (bag.status == "已上线") and (not self._readonly)
+        # Hide by default
+        try:
+            self.manual_frame.pack_forget()
+        except Exception:
+            pass
+        if allowed:
+            self.manual_frame.pack(fill="x", pady=(10, 0))
+            self.v_manual_state.set(bag.status)
+            self.rb_up.configure(state="normal")
+            self.rb_down.configure(state="normal")
+            self.btn_apply_state.configure(state="normal")
+        else:
+            self.rb_up.configure(state="disabled")
+            self.rb_down.configure(state="disabled")
+            self.btn_apply_state.configure(state="disabled")
 
     def _parse_float(self, s: str, name: str, lo=None, hi=None) -> float:
         v = float(str(s).strip())
@@ -1485,6 +1493,9 @@ class PageConfig(ttk.Frame):
 
     def _apply_manual_state(self):
         bag = self.app.ensure_current()
+        if bag.status != "已上线":
+            messagebox.showwarning("不可操作", "仅在福袋已上线并处于编辑时可手动切换上下线。")
+            return
         target = self.v_manual_state.get()
         if target not in ("已上线", "已下架"):
             messagebox.showwarning("无法切换", "请选择上线或下线。")
@@ -1647,8 +1658,6 @@ class PagePick(ttk.Frame):
 
         self.breadcrumb = ttk.Label(self, text="", foreground="#9ca3af")
         self.breadcrumb.pack(anchor="w")
-        ttk.Button(self, text="返回列表", command=lambda: self.app.show("PageBagList")).place(relx=1.0, y=5, x=-10, anchor="ne")
-        ttk.Button(self, text="返回列表", command=lambda: self.app.show("PageBagList")).place(relx=1.0, y=5, x=-10, anchor="ne")
         ttk.Button(self, text="返回列表", command=self.back_list).place(relx=1.0, y=5, x=-10, anchor="ne")
 
         ttk.Label(self, text="商品选品（系统筛选 + 手动添加）", font=("Microsoft YaHei UI", 16, "bold")).pack(anchor="w", pady=(0, 10))
