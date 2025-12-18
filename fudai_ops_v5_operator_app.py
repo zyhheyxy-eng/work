@@ -87,6 +87,11 @@ class BagState:
     bag_id: str
     status: str = "未上线"  # 未上线 / 已上线 / 已下架
     cfg: Optional[Config] = None
+    cover_path: str = ""
+    bg_path: str = ""
+    ad_path: str = ""
+    distribution: str = ""
+    remark: str = ""
 
     # 选品相关
     filtered: List[Item] = None
@@ -1136,7 +1141,7 @@ class PageConfig(ttk.Frame):
         self.v_remark = tk.StringVar(value="")
 
         now = dt.datetime.now()
-        self.v_up_date = tk.StringVar(value=f"{(now + dt.timedelta(hours=1)):%Y-%m-%d}")
+        self.v_up_date = tk.StringVar(value=f"{(now + dt.timedelta(days=1)):%Y-%m-%d}")
         self.v_down_date = tk.StringVar(value=f"{(now + dt.timedelta(days=7)):%Y-%m-%d}")
         self.v_up_time = tk.StringVar(value=f"{(now + dt.timedelta(hours=1)):%H:%M}")
         self.v_down_time = tk.StringVar(value=f"{(now + dt.timedelta(days=7)):%H:%M}")
@@ -1266,35 +1271,62 @@ class PageConfig(ttk.Frame):
         # 上下架时间：日期+时间选择
         def time_widgets(r, date_var, time_var):
             ttk.Entry(r, textvariable=date_var, width=12).pack(side="left", padx=(4, 0))
-            times = [f"{h:02d}:{m:02d}" for h in range(24) for m in (0,30)]
-            cb = ttk.Combobox(r, textvariable=time_var, values=times, width=8, state="readonly")
-            cb.pack(side="left", padx=(4, 0))
+            btn = ttk.Button(r, text="选择日期", command=lambda v=date_var: self._open_date_picker(v))
+            btn.pack(side="left", padx=(4, 0))
 
-        row(base, "上架时间", self.v_up_date, "选择日期+时间", extra=lambda r: time_widgets(r, self.v_up_date, self.v_up_time))
-        row(base, "下架时间", self.v_down_date, "需晚于上架时间", extra=lambda r: time_widgets(r, self.v_down_date, self.v_down_time))
+        row(base, "上架时间", self.v_up_date, "选择日期", extra=lambda r: time_widgets(r, self.v_up_date, None))
+        row(base, "下架时间", self.v_down_date, "需晚于上架", extra=lambda r: time_widgets(r, self.v_down_date, None))
 
         ttk.Label(base, text="关键配置", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
         row(base, "十连抽占比 q（%）", self.v_q, "如 60")
         row(base, "售价筛选比例（%）", self.v_ratio, "商品售价≥P×比例")
 
-        ttk.Label(base, text="保底设置", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
-        self.cb_pity = ttk.Checkbutton(base, text="开启：累计 X 抽必出传说", variable=self.v_pity_on, command=self._toggle_x)
-        self.cb_pity.pack(anchor="w")
-        rx = ttk.Frame(base)
-        rx.pack(fill="x", pady=4)
-        ttk.Label(rx, text="保底阈值 X", width=18).pack(side="left")
-        self.ent_X = ttk.Entry(rx, textvariable=self.v_X, width=18)
-        self.ent_X.pack(side="left")
-        self._basic_entries.append(self.ent_X)
+        media = ttk.Labelframe(parent, text="素材与分销", padding=8)
+        media.pack(fill="x", pady=(8, 0))
+        for label, var in [("封面图", self.v_cover), ("背景图", self.v_bg), ("广告图", self.v_ad)]:
+            row = ttk.Frame(media)
+            row.pack(fill="x", pady=3)
+            ttk.Label(row, text=f"{label}：", width=10).pack(side="left")
+            ttk.Entry(row, textvariable=var).pack(side="left", fill="x", expand=True)
+            ttk.Button(row, text="上传", command=lambda v=var: self._upload_file(v)).pack(side="left", padx=6)
 
-        hint = ("自动筛选与计算逻辑（只读）：\n"
-                "1) 过滤禁用/黑名单/非Steam/DLC/售价低于最低价/售价低于P×比例的商品；库存需>0。\n"
-                "2) 按成本范围匹配等级，生成等级概率与成本区间；折扣结束商品会自动剔除。\n"
-                "3) 计算期望成本并对未达标情况尝试自适应调权；结果页根据最终概率计算利润率。")
-        ttk.Label(parent, text=hint, foreground="#6b7280", wraplength=420, justify="left").pack(anchor="w", pady=(4,0))
+        row_dist = ttk.Frame(media)
+        row_dist.pack(fill="x", pady=3)
+        ttk.Label(row_dist, text="分销选择：", width=10).pack(side="left")
+        cb_dist = ttk.Combobox(row_dist, textvariable=self.v_distribution, values=["不限", "内部分销", "外部分销"], state="readonly", width=12)
+        cb_dist.pack(side="left")
+
+        row_remark = ttk.Frame(media)
+        row_remark.pack(fill="x", pady=3)
+        ttk.Label(row_remark, text="备注：", width=10).pack(side="left")
+        ttk.Entry(row_remark, textvariable=self.v_remark).pack(side="left", fill="x", expand=True)
 
     def _toggle_x(self):
         self.ent_X.configure(state=("normal" if (self.v_pity_on.get() and not self._readonly) else "disabled"))
+
+    def _open_date_picker(self, var: tk.StringVar):
+        top = tk.Toplevel(self)
+        top.title("选择日期")
+        top.geometry("260x320")
+        top.resizable(False, False)
+
+        today = dt.date.today()
+        days = [today + dt.timedelta(days=i) for i in range(0, 180)]
+        lb = tk.Listbox(top)
+        for d in days:
+            lb.insert("end", d.strftime("%Y-%m-%d"))
+        lb.pack(fill="both", expand=True, padx=8, pady=8)
+
+        def choose(evt=None):
+            sel = lb.curselection()
+            if not sel:
+                return
+            val = lb.get(sel[0])
+            var.set(val)
+            top.destroy()
+
+        lb.bind("<Double-1>", choose)
+        ttk.Button(top, text="确认", command=choose).pack(pady=6)
 
     def _build_levels(self, parent):
         self._range_entries = []
@@ -1313,7 +1345,6 @@ class PageConfig(ttk.Frame):
         self._range_entries.append(ent_ratio)
 
         ttk.Label(box, text="等级与成本范围（数值区间）", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
-        ttk.Label(box, text="系统预期成本=参考值（只读）。建议填写区间包含参考值。", foreground="#9ca3af").pack(anchor="w", pady=(0, 6))
 
         header = ttk.Frame(box)
         header.pack(fill="x", pady=(0, 4))
@@ -1341,15 +1372,7 @@ class PageConfig(ttk.Frame):
             e_hi.grid(row=0, column=5, sticky="w")
             self._range_entries.extend([e_lo, e_hi])
 
-        ttk.Label(box, text="库存筛选：库存需大于0；可在选品页按报警值提示低库存。", foreground="#6b7280").pack(anchor="w", pady=(6,0))
-
-        extra = ttk.Labelframe(box, text="素材与分销", padding=8)
-        extra.pack(fill="x", pady=(10, 0))
-        for label, var in [("封面图", self.v_cover), ("背景图", self.v_bg), ("广告图", self.v_ad), ("分销选择", self.v_distribution), ("备注", self.v_remark)]:
-            row = ttk.Frame(extra)
-            row.pack(fill="x", pady=3)
-            ttk.Label(row, text=f"{label}：", width=10).pack(side="left")
-            ttk.Entry(row, textvariable=var).pack(side="left", fill="x", expand=True)
+        ttk.Label(box, text="库存筛选：库存需大于0；低于报警值在选品页提示。", foreground="#6b7280").pack(anchor="w", pady=(6,0))
 
     def _parse_float(self, s: str, name: str, lo=None, hi=None) -> float:
         v = float(str(s).strip())
@@ -1379,8 +1402,8 @@ class PageConfig(ttk.Frame):
         q = self._parse_float(self.v_q.get(), "十连抽占比 q(%)", lo=0.0, hi=100.0) / 100.0
         ratio = self._parse_float(self.v_ratio.get(), "售价筛选比例(%)", lo=0.0, hi=200.0) / 100.0
 
-        up_time = parse_dt(f"{self.v_up_date.get()} {self.v_up_time.get()}", "上架时间")
-        down_time = parse_dt(f"{self.v_down_date.get()} {self.v_down_time.get()}", "下架时间")
+        up_time = parse_dt(f"{self.v_up_date.get()} 00:00", "上架时间")
+        down_time = parse_dt(f"{self.v_down_date.get()} 00:00", "下架时间")
         if down_time <= up_time:
             raise ValueError("下架时间必须晚于上架时间")
 
