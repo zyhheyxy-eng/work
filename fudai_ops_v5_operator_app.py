@@ -1285,10 +1285,6 @@ class PageConfig(ttk.Frame):
         row(base, "上架时间", self.v_up_date, "选择日期", extra=lambda r: time_widgets(r, self.v_up_date, None))
         row(base, "下架时间", self.v_down_date, "需晚于上架", extra=lambda r: time_widgets(r, self.v_down_date, None))
 
-        ttk.Label(base, text="关键配置", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
-        row(base, "十连抽占比 q（%）", self.v_q, "如 60")
-        row(base, "售价筛选比例（%）", self.v_ratio, "商品售价≥P×比例")
-
         media = ttk.Labelframe(parent, text="素材与分销", padding=8)
         media.pack(fill="x", pady=(8, 0))
         for label, var in [("封面图", self.v_cover), ("背景图", self.v_bg), ("广告图", self.v_ad)]:
@@ -1438,6 +1434,24 @@ class PageConfig(ttk.Frame):
         self.ent_X = ttk.Entry(rx, textvariable=self.v_X, width=18)
         self.ent_X.pack(side="left")
         self._range_entries.append(self.ent_X)
+
+        # 上下架日期选择（右侧快捷入口）
+        ttk.Label(box, text="上下架选择（日期）", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
+        rs = ttk.Frame(box)
+        rs.pack(fill="x", pady=2)
+        ttk.Label(rs, text="上架日期", width=12).pack(side="left")
+        ent_up = ttk.Entry(rs, textvariable=self.v_up_date, width=12)
+        ent_up.pack(side="left")
+        ttk.Button(rs, text="选择", command=lambda: self._open_date_picker(self.v_up_date)).pack(side="left", padx=4)
+        self._range_entries.append(ent_up)
+
+        rd = ttk.Frame(box)
+        rd.pack(fill="x", pady=2)
+        ttk.Label(rd, text="下架日期", width=12).pack(side="left")
+        ent_dn = ttk.Entry(rd, textvariable=self.v_down_date, width=12)
+        ent_dn.pack(side="left")
+        ttk.Button(rd, text="选择", command=lambda: self._open_date_picker(self.v_down_date)).pack(side="left", padx=4)
+        self._range_entries.append(ent_dn)
 
     def _parse_float(self, s: str, name: str, lo=None, hi=None) -> float:
         v = float(str(s).strip())
