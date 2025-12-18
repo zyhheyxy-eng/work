@@ -88,6 +88,11 @@ class BagState:
     bag_id: str
     status: str = "未上线"  # 未上线 / 已上线 / 已下架
     cfg: Optional[Config] = None
+    bag_type: str = "原福袋"
+    recommended: bool = False
+    revenue: float = 0.0
+    orders: int = 0
+    total_cost: float = 0.0
     cover_path: str = ""
     bg_path: str = ""
     ad_path: str = ""
@@ -966,43 +971,70 @@ class PageBagList(ttk.Frame):
         ttk.Button(top, text="新建福袋", command=self.new_bag).pack(side="left")
         ttk.Button(top, text="提醒设置", command=self.open_reminder_settings).pack(side="left", padx=8)
 
-        ttk.Label(top, text="搜索：").pack(side="right", padx=(6, 4))
+        # 筛选区
+        filt = ttk.Frame(self)
+        filt.pack(fill="x", pady=(6, 6))
+        ttk.Label(filt, text="搜索：").pack(side="left", padx=(0, 4))
         self.v_search = tk.StringVar(value="")
-        ent = ttk.Entry(top, textvariable=self.v_search, width=26, justify="left")
-        ent.pack(side="right")
+        ent = ttk.Entry(filt, textvariable=self.v_search, width=22, justify="left")
+        ent.pack(side="left")
         self.app.apply_placeholder(ent, self.v_search, "搜索 ID/名称")
-        ent.bind("<KeyRelease>", lambda e: self.refresh())
 
-        ttk.Label(top, text="状态：").pack(side="right", padx=(16, 4))
-        self.v_status = tk.StringVar(value="全部")
-        cb = ttk.Combobox(top, textvariable=self.v_status, values=["全部", "未上线", "已上线", "已下架"], width=10, state="readonly")
-        cb.pack(side="right")
-        self.v_status.trace_add("write", lambda *_: self.refresh())
+        ttk.Label(filt, text="福袋类型：").pack(side="left", padx=(12, 4))
+        self.v_type = tk.StringVar(value="请选择")
+        cb_type = ttk.Combobox(filt, textvariable=self.v_type, values=["请选择", "原福袋", "其他类型"], width=10, state="readonly")
+        cb_type.pack(side="left")
 
-        self.tree = ttk.Treeview(self, columns=("id","name","P","time","target","profit","count","status"), show="headings", height=18)
+        ttk.Label(filt, text="开启状态：").pack(side="left", padx=(12, 4))
+        self.v_status = tk.StringVar(value="请选择")
+        cb_status = ttk.Combobox(filt, textvariable=self.v_status, values=["请选择", "开启", "关闭"], width=10, state="readonly")
+        cb_status.pack(side="left")
+
+        ttk.Label(filt, text="是否推荐：").pack(side="left", padx=(12, 4))
+        self.v_rec = tk.StringVar(value="请选择")
+        cb_rec = ttk.Combobox(filt, textvariable=self.v_rec, values=["请选择", "是", "否"], width=8, state="readonly")
+        cb_rec.pack(side="left")
+
+        ttk.Label(filt, text="统计时间：").pack(side="left", padx=(12, 4))
+        self.v_start = tk.StringVar(value="")
+        self.v_end = tk.StringVar(value="")
+        ent_start = ttk.Entry(filt, textvariable=self.v_start, width=12)
+        ent_start.pack(side="left")
+        self.app.apply_placeholder(ent_start, self.v_start, "开始日期")
+        ttk.Button(filt, text="选择", command=lambda: self._open_date_picker(self.v_start)).pack(side="left", padx=(2, 6))
+        ttk.Label(filt, text="~").pack(side="left")
+        ent_end = ttk.Entry(filt, textvariable=self.v_end, width=12)
+        ent_end.pack(side="left")
+        self.app.apply_placeholder(ent_end, self.v_end, "结束日期")
+        ttk.Button(filt, text="选择", command=lambda: self._open_date_picker(self.v_end)).pack(side="left", padx=(2, 6))
+
+        ttk.Button(filt, text="搜索", command=self.refresh).pack(side="left", padx=(12, 0))
+
+        ttk.Label(self, text="统计时间用于计算成交额、订单数、成本、利润、利润率。未选择时使用默认区间。", foreground="#6b7280").pack(anchor="w", pady=(2, 6))
+
+        self.tree = ttk.Treeview(self, columns=("id","name","type","P","rev","orders","cost","profit","prate","status","count","ops"), show="headings", height=18)
         for c, t, w, a in [
             ("id", "福袋ID", 90, "center"),
-            ("name", "福袋名称", 240, "w"),
+            ("name", "福袋名称", 200, "w"),
+            ("type", "福袋类型", 90, "center"),
             ("P", "单抽标价(元)", 110, "e"),
-            ("time", "上下架时间", 240, "center"),
-            ("target", "目标利润率", 110, "center"),
-            ("profit", "预计利润率", 110, "center"),
+            ("rev", "成交额", 100, "e"),
+            ("orders", "订单数", 80, "center"),
+            ("cost", "成本", 100, "e"),
+            ("profit", "利润", 100, "e"),
+            ("prate", "利润率", 90, "center"),
+            ("status", "状态", 80, "center"),
             ("count", "商品个数", 90, "center"),
-            ("status", "状态", 90, "center"),
+            ("ops", "管理操作", 160, "center"),
         ]:
             self.tree.heading(c, text=t)
             self.tree.column(c, width=w, anchor=a)
         self.tree.pack(fill="both", expand=True, pady=(0, 10))
+        self.tree.bind("<Button-1>", self.on_click)
 
         btns = ttk.Frame(self)
         btns.pack(fill="x")
-        ttk.Button(btns, text="编辑️ 编辑", command=self.edit).pack(side="left")
-        ttk.Button(btns, text="查看 查看配置（只读）", command=self.view).pack(side="left", padx=8)
-        self.btn_del_down = ttk.Button(btns, text="删除️ 删除/⏹️ 下架", command=self.del_or_down)
-        self.btn_del_down.pack(side="left", padx=8)
-
-        self.hint = ttk.Label(self, text="提示：未上线可删除；已上线可下架；已下架可删除。", foreground="#9ca3af")
-        self.hint.pack(anchor="w")
+        ttk.Label(btns, text="首页仅作为入口与数据总览（统计时间默认按产品定义）。", foreground="#6b7280").pack(anchor="w")
 
         self._view_mode = False
 
@@ -1013,44 +1045,66 @@ class PageBagList(ttk.Frame):
         self.refresh()
 
     def _match(self, bag: BagState) -> bool:
-        st = self.v_status.get()
-        if st != "全部" and bag.status != st:
-            return False
         kw = _safe_kw(self.v_search.get(), "搜索 ID/名称").lower()
         if kw:
-            name = bag.cfg.bag_name if bag.cfg else ""
-            if kw not in (name or "").lower() and kw not in bag.bag_id.lower():
+            name = (bag.cfg.bag_name if bag.cfg else "") or ""
+            if kw not in name.lower() and kw not in bag.bag_id.lower():
+                return False
+
+        type_v = self.v_type.get()
+        if type_v != "请选择" and (bag.bag_type or "原福袋") != type_v:
+            return False
+
+        status_v = self.v_status.get()
+        if status_v != "请选择":
+            is_open = (bag.status == "已上线")
+            if status_v == "开启" and not is_open:
+                return False
+            if status_v == "关闭" and is_open:
+                return False
+
+        rec_v = self.v_rec.get()
+        if rec_v != "请选择":
+            want = (rec_v == "是")
+            if bag.recommended != want:
                 return False
         return True
-
 
     def refresh(self):
         self.app._auto_down_by_time()
         self.tree.delete(*self.tree.get_children())
-        for bag_id, bag in sorted(self.app.bags.items(), key=lambda x: x[0]):
+        bags = sorted(self.app.bags.items(), key=lambda x: (0 if x[1].recommended else 1, x[0]))
+        for bag_id, bag in bags:
             if not self._match(bag):
                 continue
             name = bag.cfg.bag_name if bag.cfg else "（未配置）"
-            P = f"{bag.cfg.P:.2f}" if bag.cfg else "—"
-            time_s = "—"
-            if bag.cfg:
-                time_s = f"{fmt_dt(bag.cfg.up_time)} ~ {fmt_dt(bag.cfg.down_time)}"
-            target = f"{bag.cfg.g * 100:.0f}%" if bag.cfg else "—"
-            profit = "—"
-            count = len(bag.selected_ids) if bag.selected_ids else 0
-            if bag.cfg and bag.final_probs:
-                selected = [it for it in self.app.catalog if it.id in bag.selected_ids]
-                P_eff = calc_p_eff(bag.cfg.P, bag.cfg.d, bag.cfg.q)
-                ec = expected_cost_total(bag.cfg, selected, bag.final_probs) if selected else 0.0
-                pr = (P_eff - ec) / P_eff if P_eff > 0 else 0.0
-                profit = f"{pr * 100:.2f}%"
-            self.tree.insert("", "end", iid=bag_id, values=(bag_id, name, P, time_s, target, profit, count, bag.status))
+            btype = bag.bag_type or "原福袋"
+            price = f"{bag.cfg.P:.2f}" if bag.cfg else "—"
 
-    def _selected_bag_id(self) -> Optional[str]:
-        sel = self.tree.selection()
-        if not sel:
-            return None
-        return sel[0]
+            revenue = bag.revenue or 0.0
+            orders = bag.orders or 0
+            cost = bag.total_cost or 0.0
+            profit_val = revenue - cost
+            prate = (profit_val / revenue * 100.0) if revenue > 1e-9 else None
+
+            status = "开启" if bag.status == "已上线" else "关闭"
+            count = len(bag.selected_ids) if bag.selected_ids else 0
+            ops_txt = "修改｜" + ("取消推荐" if bag.recommended else "推荐") + "｜详情"
+
+            self.tree.insert("", "end", iid=bag_id, values=(
+                bag_id,
+                name,
+                btype,
+                price,
+                f"{revenue:.2f}",
+                str(orders),
+                f"{cost:.2f}",
+                f"{profit_val:.2f}",
+                (f"{prate:.2f}%" if prate is not None else "—"),
+                status,
+                str(count),
+                ops_txt,
+            ))
 
     def new_bag(self):
         bag_id = self.app._next_bag_id()
@@ -1060,41 +1114,67 @@ class PageBagList(ttk.Frame):
         self.app.frames["PageConfig"].set_readonly(False)
         self.app.show("PageConfig")
 
-    def edit(self):
-        bag_id = self._selected_bag_id()
-        if not bag_id:
-            messagebox.showinfo("提示", "请先选择一个福袋。")
+    def on_click(self, event):
+        col = self.tree.identify_column(event.x)
+        row = self.tree.identify_row(event.y)
+        if not row or col != "#12":
             return
+        bbox = self.tree.bbox(row, column=col)
+        if not bbox:
+            return
+        x_rel = event.x - bbox[0]
+        width = max(bbox[2], 1)
+        section = x_rel / width
+        if section < 1/3:
+            self._edit_bag(row)
+        elif section < 2/3:
+            self._toggle_recommend(row)
+        else:
+            self._show_detail(row)
+
+    def _edit_bag(self, bag_id: str):
         self.app.current_bag_id = bag_id
         self.app.frames["PageConfig"].set_readonly(False)
         self.app.show("PageConfig")
 
-    def view(self):
-        bag_id = self._selected_bag_id()
-        if not bag_id:
-            messagebox.showinfo("提示", "请先选择一个福袋。")
+    def _toggle_recommend(self, bag_id: str):
+        bag = self.app.bags.get(bag_id)
+        if not bag:
             return
-        self.app.current_bag_id = bag_id
-        self.app.frames["PageConfig"].set_readonly(True)
-        self.app.show("PageConfig")
+        bag.recommended = not bag.recommended
+        self.refresh()
 
-    def del_or_down(self):
-        bag_id = self._selected_bag_id()
-        if not bag_id:
-            messagebox.showinfo("提示", "请先选择一个福袋。")
+    def _show_detail(self, bag_id: str):
+        bag = self.app.bags.get(bag_id)
+        if not bag:
             return
-        bag = self.app.bags[bag_id]
-        if bag.status == "已上线":
-            if messagebox.askyesno("确认下架", f"确认下架 {bag_id} 吗？"):
-                bag.status = "已下架"
-                self.refresh()
-            return
-        # 未上线/已下架可删除
-        if messagebox.askyesno("确认删除", f"确认删除 {bag_id} 吗？删除后不可恢复。"):
-            del self.app.bags[bag_id]
-            if self.app.current_bag_id == bag_id:
-                self.app.current_bag_id = None
-            self.refresh()
+        win = tk.Toplevel(self)
+        win.title(f"{bag_id} 详情")
+        win.geometry("420x280")
+        win.resizable(False, False)
+        rev = bag.revenue or 0.0
+        orders = bag.orders or 0
+        cost = bag.total_cost or 0.0
+        profit_val = rev - cost
+        prate = (profit_val / rev * 100.0) if rev > 1e-9 else None
+
+        lines = [
+            f"福袋ID：{bag.bag_id}",
+            f"福袋名称：{bag.cfg.bag_name if bag.cfg else '（未配置）'}",
+            f"福袋类型：{bag.bag_type or '原福袋'}",
+            f"成交额：{rev:.2f}",
+            f"订单数：{orders}",
+            f"成本：{cost:.2f}",
+            f"利润：{profit_val:.2f}",
+            f"利润率：{prate:.2f}%" if prate is not None else "利润率：—",
+            f"状态：{'开启' if bag.status == '已上线' else '关闭'}",
+            f"商品个数：{len(bag.selected_ids) if bag.selected_ids else 0}",
+        ]
+        lbl = tk.Text(win, wrap="word", height=10)
+        lbl.pack(fill="both", expand=True, padx=12, pady=12)
+        lbl.insert("1.0", "\n".join(lines))
+        lbl.configure(state="disabled")
+        ttk.Button(win, text="关闭", command=win.destroy).pack(pady=(0, 10))
 
 # -------------------------------
 # Page 2：参数配置页（支持只读模式）
@@ -1136,6 +1216,7 @@ class PageConfig(ttk.Frame):
         self.v_d = tk.StringVar(value="0.95")
         self.v_q = tk.StringVar(value="60")
         self.v_ratio = tk.StringVar(value="80")
+        self.v_type = tk.StringVar(value="原福袋")
         self.v_cover = tk.StringVar(value="")
         self.v_bg = tk.StringVar(value="")
         self.v_ad = tk.StringVar(value="")
@@ -1211,6 +1292,7 @@ class PageConfig(ttk.Frame):
             self.v_d.set(f"{cfg.d:.2f}")
             self.v_q.set(str(int(round(cfg.q * 100))))
             self.v_ratio.set(str(int(round(cfg.price_ratio * 100))))
+            self.v_type.set(bag.bag_type or "原福袋")
             self.v_up_date.set(cfg.up_time.strftime("%Y-%m-%d"))
             self.v_down_date.set(cfg.down_time.strftime("%Y-%m-%d"))
             self.v_pity_on.set(bool(cfg.pity_on))
@@ -1228,6 +1310,7 @@ class PageConfig(ttk.Frame):
         else:
             if not self.v_name.get():
                 self.v_name.set(f"{dt.datetime.now():%Y%m%d} 福袋")
+            self.v_type.set(bag.bag_type or "原福袋")
             self.v_cover.set(bag.cover_path)
             self.v_bg.set(bag.bg_path)
             self.v_ad.set(bag.ad_path)
@@ -1277,6 +1360,7 @@ class PageConfig(ttk.Frame):
                 ttk.Label(r, text=hint, foreground="#9ca3af").pack(side="left", padx=8)
 
         row(base, "福袋名称（≤30字）", self.v_name)
+        row(base, "福袋类型", self.v_type)
         row(base, "单抽标价 P（元）", self.v_P)
         row(base, "目标利润率 g（%）", self.v_g, "如 30")
         row(base, "十连折扣系数 d", self.v_d, "如 0.97=97折")
@@ -1599,6 +1683,7 @@ class PageConfig(ttk.Frame):
             return
         bag = self.app.ensure_current()
         bag.cfg = cfg
+        bag.bag_type = self.v_type.get().strip() or "原福袋"
         bag.cover_path = self.v_cover.get().strip()
         bag.bg_path = self.v_bg.get().strip()
         bag.ad_path = self.v_ad.get().strip()
