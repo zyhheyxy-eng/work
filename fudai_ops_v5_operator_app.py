@@ -432,13 +432,13 @@ class App(tk.Tk):
         for it in self.catalog:
             if it.discount_end and it.discount_end <= now:
                 it.discount_status = "无活动"
-        # 折扣活动结束：从当前福袋已选池自动剔除（无论系统/手动）
+        # 折扣活动结束：仅对系统筛选商品自动剔除，手动添加不受影响
         for it_id in list(bag.selected_ids):
+            if it_id in bag.manual_added_ids:
+                continue
             it = next((x for x in self.catalog if x.id == it_id), None)
             if it and it.discount_end and it.discount_end <= now:
                 bag.selected_ids.remove(it_id)
-                if it_id in bag.manual_added_ids:
-                    bag.manual_added_ids.remove(it_id)
 
     def _tick_minutely(self):
         try:
@@ -1829,6 +1829,12 @@ class PagePick(ttk.Frame):
         self.sel_page_size = tk.StringVar(value="10")
         self.cand_page = 1
         self.cand_page_size = tk.StringVar(value="10")
+        self.sel_sort_key = None
+        self.sel_sort_desc = False
+        self.cand_sort_key = None
+        self.cand_sort_desc = False
+
+        self.v_stock_threshold = tk.StringVar(value="")
 
         self.breadcrumb = ttk.Label(self, text="", foreground="#9ca3af")
         self.breadcrumb.pack(anchor="w")
@@ -1846,10 +1852,11 @@ class PagePick(ttk.Frame):
         for k in LEVELS:
             ttk.Checkbutton(lvf, text=LEVEL_NAME[k], variable=self.level_vars[k], command=self.refresh).pack(side="left", padx=(0, 6))
 
-        self.v_stock_filter = tk.StringVar(value="全部")
-        ttk.Label(top, text="库存：").pack(side="left", padx=(16, 4))
-        ttk.Combobox(top, textvariable=self.v_stock_filter, values=["全部", "正常库存", "低库存预警"], width=10, state="readonly").pack(side="left")
-        self.v_stock_filter.trace_add("write", lambda *_: self.refresh())
+        ttk.Label(top, text="库存阈值≥").pack(side="left", padx=(16, 4))
+        ent_stock = ttk.Entry(top, textvariable=self.v_stock_threshold, width=10, justify="left")
+        ent_stock.pack(side="left")
+        self.app.apply_placeholder(ent_stock, self.v_stock_threshold, "库存N")
+        ent_stock.bind("<KeyRelease>", lambda e: self.refresh())
 
         ttk.Label(top, text="搜索：").pack(side="right", padx=(6, 4))
         self.v_search = tk.StringVar(value="")
@@ -1862,7 +1869,7 @@ class PagePick(ttk.Frame):
         selected_box = ttk.Labelframe(self, text="已选择商品", padding=8)
         selected_box.pack(fill="both", expand=True, pady=(6, 6))
 
-        self.tree_selected = ttk.Treeview(selected_box, columns=("checked", "id", "name", "level", "stock", "cost", "prob", "status"),
+        self.tree_selected = ttk.Treeview(selected_box, columns=("checked", "id", "name", "level", "stock", "price", "cost", "prob", "disc", "src"),
                                           show="headings", height=7)
         for c, t, w, a in [
             ("checked", "选择", 60, "center"),
@@ -1870,11 +1877,16 @@ class PagePick(ttk.Frame):
             ("name", "游戏名", 240, "w"),
             ("level", "等级", 90, "center"),
             ("stock", "库存", 90, "center"),
+            ("price", "售价", 90, "e"),
             ("cost", "成本", 90, "e"),
             ("prob", "最终概率", 100, "e"),
-            ("status", "状态提示", 140, "center"),
+            ("disc", "折扣活动状态", 150, "center"),
+            ("src", "来源", 90, "center"),
         ]:
-            self.tree_selected.heading(c, text=t)
+            cmd = None
+            if c in ("price", "cost", "disc"):
+                cmd = lambda col=c: self._toggle_sort("sel", col)
+            self.tree_selected.heading(c, text=t, command=cmd)
             self.tree_selected.column(c, width=w, anchor=a)
         self.tree_selected.pack(fill="both", expand=True)
         self.tree_selected.bind("<Button-1>", self.on_click_selected)
@@ -1908,7 +1920,10 @@ class PagePick(ttk.Frame):
             ("disc", "折扣活动状态", 150, "center"),
             ("src", "来源", 90, "center"),
         ]:
-            self.tree.heading(c, text=t)
+            cmd = None
+            if c in ("price", "cost", "disc"):
+                cmd = lambda col=c: self._toggle_sort("cand", col)
+            self.tree.heading(c, text=t, command=cmd)
             self.tree.column(c, width=w, anchor=a)
         self.tree.pack(fill="both", expand=True)
 
@@ -1949,16 +1964,64 @@ class PagePick(ttk.Frame):
     def _is_low_stock(self, it: Item) -> bool:
         return it.stock < max(1, it.alarm)
 
+    def _stock_ok(self, it: Item) -> bool:
+        try:
+            threshold = int(float(self.v_stock_threshold.get().strip()))
+            if threshold < 0:
+                return True
+            return it.stock >= threshold
+        except Exception:
+            return True
+
+    def _toggle_sort(self, which: str, key: str):
+        if which == "sel":
+            if self.sel_sort_key == key:
+                self.sel_sort_desc = not self.sel_sort_desc
+            else:
+                self.sel_sort_key = key
+                self.sel_sort_desc = False
+        else:
+            if self.cand_sort_key == key:
+                self.cand_sort_desc = not self.cand_sort_desc
+            else:
+                self.cand_sort_key = key
+                self.cand_sort_desc = False
+        self.refresh()
+
+    def _disc_text(self, it: Item, now: dt.datetime) -> str:
+        disc = it.discount_status
+        if it.discount_end and it.discount_end > now:
+            remain = it.discount_end - now
+            if remain.total_seconds() <= 24 * 3600:
+                disc = f"即将结束（{int(remain.total_seconds() // 3600)}h）"
+        if it.discount_end and it.discount_end <= now:
+            disc = "无活动"
+        return disc
+
+    def _apply_sort(self, which: str, items: List[Item], now: dt.datetime) -> List[Item]:
+        key = self.sel_sort_key if which == "sel" else self.cand_sort_key
+        desc = self.sel_sort_desc if which == "sel" else self.cand_sort_desc
+        if not key:
+            return items
+
+        def _k(it: Item):
+            if key == "price":
+                return it.price
+            if key == "cost":
+                return it.cost
+            if key == "disc":
+                return self._disc_text(it, now)
+            return 0
+
+        return sorted(items, key=_k, reverse=desc)
+
     def _matches(self, it: Item) -> bool:
         if not self.level_vars.get(it.level, tk.BooleanVar(value=True)).get():
             return False
         kw = _safe_kw(self.v_search.get(), "搜索 ID/名称").lower()
         if kw and kw not in it.name.lower() and kw not in f"{it.id}".lower():
             return False
-        sf = self.v_stock_filter.get()
-        if sf == "正常库存" and self._is_low_stock(it):
-            return False
-        if sf == "低库存预警" and not self._is_low_stock(it):
+        if not self._stock_ok(it):
             return False
         return True
 
@@ -1969,29 +2032,27 @@ class PagePick(ttk.Frame):
             return
 
         self.app.prune_expired_from_selection(bag)
+        now = dt.datetime.now()
 
         # 已选列表（受搜索/等级/库存筛选影响）
         selected_items = [it for it in self.app.catalog if it.id in bag.selected_ids and self._matches(it)]
+        selected_items = self._apply_sort("sel", selected_items, now)
         sel_size = max(1, int(self.sel_page_size.get() or 10))
         sel_slice, sel_total, sel_pages, self.sel_page = self._paginate(selected_items, self.sel_page, sel_size)
 
         self.tree_selected.delete(*self.tree_selected.get_children())
-        now = dt.datetime.now()
+        sel_rows = []
         for it in sel_slice:
             stock = f"{it.stock}" if self._is_low_stock(it) else str(it.stock)
-            status_msg = []
-            if self._is_low_stock(it):
-                status_msg.append("低库存")
-            if it.discount_end and it.discount_end > now:
-                remain = it.discount_end - now
-                if remain.total_seconds() <= 24 * 3600:
-                    status_msg.append("折扣即将结束")
-            elif it.discount_end and it.discount_end <= now:
-                status_msg.append("折扣已结束")
+            disc = self._disc_text(it, now)
             probs = bag.final_probs or {}
             p = probs.get(it.id, 0.0)
-            self.tree_selected.insert("", "end", iid=str(it.id),
-                                      values=("☑️", it.id, it.name, LEVEL_BADGE[it.level], stock, f"{it.cost:.2f}", f"{p * 100:.4f}%" if p > 0 else "-", " / ".join(status_msg) if status_msg else "-"))
+            src = "手动添加" if it.id in bag.manual_added_ids else "系统筛选"
+            sel_rows.append(("☑️", it.id, it.name, LEVEL_BADGE[it.level], stock, it.price, it.cost, p, disc, src))
+
+        for checked, it_id, name, lvl, stock, price, cost, p, disc, src in sel_rows:
+            self.tree_selected.insert("", "end", iid=str(it_id),
+                                      values=(checked, it_id, name, lvl, stock, f"{price:.2f}", f"{cost:.2f}", f"{p * 100:.4f}%" if p > 0 else "-", disc, src))
 
         self.sel_info.configure(text=f"共 {sel_total} 条，{sel_pages} 页，当前第 {self.sel_page} 页")
 
@@ -2002,29 +2063,28 @@ class PagePick(ttk.Frame):
             if self._matches(it) and it not in shown:
                 shown.append(it)
 
+        shown = self._apply_sort("cand", shown, now)
         cand_size = max(1, int(self.cand_page_size.get() or 10))
         cand_slice, cand_total, cand_pages, self.cand_page = self._paginate(shown, self.cand_page, cand_size)
 
         self.tree.delete(*self.tree.get_children())
+        cand_rows = []
         for it in cand_slice:
             checked = "☑️" if it.id in bag.selected_ids else "☐"
             stock = f"{it.stock}" if self._is_low_stock(it) else str(it.stock)
 
-            disc = it.discount_status
-            if it.discount_end and it.discount_end > now:
-                remain = it.discount_end - now
-                if remain.total_seconds() <= 24 * 3600:
-                    disc = f"即将结束（{int(remain.total_seconds() // 3600)}h）"
-            if it.discount_end and it.discount_end <= now:
-                disc = "无活动"
+            disc = self._disc_text(it, now)
 
             src = "手动添加" if it.id in bag.manual_added_ids else "系统筛选"
 
-            self.tree.insert("", "end", iid=str(it.id),
-                             values=(checked, it.id, it.name, LEVEL_BADGE[it.level], stock, f"{it.price:.2f}", f"{it.cost:.2f}", str(it.alarm), disc, src))
+            cand_rows.append((checked, it.id, it.name, LEVEL_BADGE[it.level], stock, it.price, it.cost, it.alarm, disc, src))
+
+        for checked, it_id, name, lvl, stock, price, cost, alarm, disc, src in cand_rows:
+            self.tree.insert("", "end", iid=str(it_id),
+                             values=(checked, it_id, name, lvl, stock, f"{price:.2f}", f"{cost:.2f}", str(alarm), disc, src))
 
         self.cand_info.configure(text=f"共 {cand_total} 条，{cand_pages} 页，当前第 {self.cand_page} 页")
-        self.status.configure(text=f"候选显示：{len(cand_slice)} / {cand_total}｜已勾选：{len(bag.selected_ids)}（活动结束商品会自动剔除）")
+        self.status.configure(text=f"候选显示：{len(cand_slice)} / {cand_total}｜已勾选：{len(bag.selected_ids)}（系统筛选商品折扣结束会自动剔除，手动添加不受影响）")
 
     def _paginate(self, items: List[Item], page: int, size: int) -> Tuple[List[Item], int, int, int]:
         total = len(items)
