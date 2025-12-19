@@ -1025,7 +1025,7 @@ class PageBagList(ttk.Frame):
             ("prate", "利润率", 90, "center"),
             ("status", "状态", 80, "center"),
             ("count", "商品个数", 90, "center"),
-            ("ops", "管理操作", 200, "center"),
+            ("ops", "管理操作", 230, "center"),
         ]:
             self.tree.heading(c, text=t)
             self.tree.column(c, width=w, anchor=a)
@@ -1089,7 +1089,7 @@ class PageBagList(ttk.Frame):
 
             status = "开启" if bag.status == "已上线" else "关闭"
             count = len(bag.selected_ids) if bag.selected_ids else 0
-            ops_txt = "修改｜" + ("取消推荐" if bag.recommended else "推荐") + "｜详情｜删除"
+            ops_txt = "修改｜" + ("取消推荐" if bag.recommended else "推荐") + "｜详情｜" + ("下线" if bag.status == "已上线" else "上线") + "｜删除"
 
             self.tree.insert("", "end", iid=bag_id, values=(
                 bag_id,
@@ -1125,12 +1125,14 @@ class PageBagList(ttk.Frame):
         x_rel = event.x - bbox[0]
         width = max(bbox[2], 1)
         section = x_rel / width
-        if section < 0.25:
+        if section < 0.20:
             self._edit_bag(row)
-        elif section < 0.50:
+        elif section < 0.40:
             self._toggle_recommend(row)
-        elif section < 0.75:
+        elif section < 0.60:
             self._show_detail(row)
+        elif section < 0.80:
+            self._toggle_status(row)
         else:
             self._delete_bag(row)
 
@@ -1144,6 +1146,22 @@ class PageBagList(ttk.Frame):
         if not bag:
             return
         bag.recommended = not bag.recommended
+        self.refresh()
+
+    def _toggle_status(self, bag_id: str):
+        bag = self.app.bags.get(bag_id)
+        if not bag:
+            return
+        if not bag.cfg:
+            messagebox.showwarning("缺少配置", "请先完成参数配置后再上线或下线。")
+            return
+        current = bag.status
+        if current == "已上线":
+            bag.status = "已下架"
+            messagebox.showinfo("已下线", "已手动下线该福袋，立即生效，与时间配置无关。")
+        else:
+            bag.status = "已上线"
+            messagebox.showinfo("已上线", "已手动上线该福袋，立即生效，与时间配置无关。")
         self.refresh()
 
     def _show_detail(self, bag_id: str):
@@ -1177,6 +1195,76 @@ class PageBagList(ttk.Frame):
         lbl.insert("1.0", "\n".join(lines))
         lbl.configure(state="disabled")
         ttk.Button(win, text="关闭", command=win.destroy).pack(pady=(0, 10))
+
+    def _open_date_picker(self, var: tk.StringVar):
+        top = tk.Toplevel(self)
+        top.title("选择日期")
+        top.geometry("300x320")
+        top.resizable(False, False)
+
+        try:
+            current = dt.datetime.strptime(var.get(), "%Y-%m-%d").date()
+        except Exception:
+            current = dt.date.today()
+
+        state = {"year": current.year, "month": current.month}
+
+        header = ttk.Frame(top)
+        header.pack(fill="x", pady=4)
+        lbl = ttk.Label(header, text="")
+        lbl.pack(side="left", padx=8)
+
+        def render():
+            lbl.configure(text=f"{state['year']}年{state['month']:02d}月")
+            for btn in btns:
+                btn.destroy()
+            btns.clear()
+            cal_mat = cal.monthcalendar(state["year"], state["month"])
+            for week in cal_mat:
+                row = ttk.Frame(grid)
+                row.pack(fill="x")
+                for d in week:
+                    txt = f"{d:02d}" if d else ""
+                    btn = ttk.Button(row, text=txt, width=4,
+                                     command=(lambda day=d: choose_day(day)) if d else None)
+                    btn.pack(side="left", expand=True, padx=1, pady=1)
+                    btns.append(btn)
+
+        def prev_month():
+            if state["month"] == 1:
+                state["month"] = 12
+                state["year"] -= 1
+            else:
+                state["month"] -= 1
+            render()
+
+        def next_month():
+            if state["month"] == 12:
+                state["month"] = 1
+                state["year"] += 1
+            else:
+                state["month"] += 1
+            render()
+
+        ttk.Button(header, text="<", command=prev_month).pack(side="left", padx=(8, 4))
+        ttk.Button(header, text=">", command=next_month).pack(side="left")
+
+        grid = ttk.Frame(top)
+        grid.pack(fill="both", expand=True, padx=6, pady=6)
+        header_row = ttk.Frame(grid)
+        header_row.pack(fill="x", pady=(0, 4))
+        for w in ["一", "二", "三", "四", "五", "六", "日"]:
+            ttk.Label(header_row, text=w, width=4, anchor="center").pack(side="left", expand=True)
+        btns: list[tk.Widget] = []
+
+        def choose_day(day: int):
+            if day <= 0:
+                return
+            val = dt.date(state["year"], state["month"], day).strftime("%Y-%m-%d")
+            var.set(val)
+            top.destroy()
+
+        render()
 
     def _delete_bag(self, bag_id: str):
         bag = self.app.bags.get(bag_id)
@@ -1235,7 +1323,6 @@ class PageConfig(ttk.Frame):
         self.v_ad = tk.StringVar(value="")
         self.v_distribution = tk.StringVar(value="")
         self.v_remark = tk.StringVar(value="")
-        self.v_manual_state = tk.StringVar(value="未上线")
 
         now = dt.datetime.now()
         self.v_up_date = tk.StringVar(value=f"{(now + dt.timedelta(days=1)):%Y-%m-%d}")
@@ -1319,7 +1406,6 @@ class PageConfig(ttk.Frame):
             self.v_ad.set(bag.ad_path)
             self.v_distribution.set(bag.distribution)
             self.v_remark.set(bag.remark)
-            self.v_manual_state.set(bag.status if bag.status in ("已上线", "已下架") else "未上线")
         else:
             if not self.v_name.get():
                 self.v_name.set(f"{dt.datetime.now():%Y%m%d} 福袋")
@@ -1329,12 +1415,11 @@ class PageConfig(ttk.Frame):
             self.v_ad.set(bag.ad_path)
             self.v_distribution.set(bag.distribution)
             self.v_remark.set(bag.remark)
-            self.v_manual_state.set(bag.status if bag.status in ("已上线", "已下架") else "未上线")
 
         self._apply_readonly_state()
         self.refresh_expected_cost()
         self.refresh_preview()
-        self._refresh_manual_controls()
+        # 手工上下线控制已迁移到首页管理操作
 
     def _apply_readonly_state(self):
         # entries state
@@ -1547,36 +1632,7 @@ class PageConfig(ttk.Frame):
         self.ent_X.pack(side="left")
         self._range_entries.append(self.ent_X)
 
-        self.manual_frame = ttk.Labelframe(box, text="上下架控制（人工）", padding=6)
-        manual = ttk.Frame(self.manual_frame)
-        manual.pack(fill="x", pady=2)
-        self.rb_up = ttk.Radiobutton(manual, text="上线", value="已上线", variable=self.v_manual_state)
-        self.rb_up.pack(side="left")
-        self.rb_down = ttk.Radiobutton(manual, text="下线", value="已下架", variable=self.v_manual_state)
-        self.rb_down.pack(side="left", padx=6)
-        self.btn_apply_state = ttk.Button(manual, text="立即应用", command=self._apply_manual_state)
-        self.btn_apply_state.pack(side="left", padx=8)
-
-    def _refresh_manual_controls(self):
-        if not hasattr(self, "manual_frame"):
-            return
-        bag = self.app.ensure_current()
-        allowed = (bag.status == "已上线") and (not self._readonly)
-        # Hide by default
-        try:
-            self.manual_frame.pack_forget()
-        except Exception:
-            pass
-        if allowed:
-            self.manual_frame.pack(fill="x", pady=(10, 0))
-            self.v_manual_state.set(bag.status)
-            self.rb_up.configure(state="normal")
-            self.rb_down.configure(state="normal")
-            self.btn_apply_state.configure(state="normal")
-        else:
-            self.rb_up.configure(state="disabled")
-            self.rb_down.configure(state="disabled")
-            self.btn_apply_state.configure(state="disabled")
+        # 人工上下线控制已迁移到首页管理操作
 
     def _parse_float(self, s: str, name: str, lo=None, hi=None) -> float:
         v = float(str(s).strip())
@@ -1593,19 +1649,6 @@ class PageConfig(ttk.Frame):
         if hi is not None and v > hi:
             raise ValueError(f"{name} 不能大于 {hi}")
         return v
-
-    def _apply_manual_state(self):
-        bag = self.app.ensure_current()
-        if bag.status != "已上线":
-            messagebox.showwarning("不可操作", "仅在福袋已上线并处于编辑时可手动切换上下线。")
-            return
-        target = self.v_manual_state.get()
-        if target not in ("已上线", "已下架"):
-            messagebox.showwarning("无法切换", "请选择上线或下线。")
-            return
-        bag.status = target
-        messagebox.showinfo("已更新", f"状态已切换为：{target}（立即生效，独立于时间配置）。")
-        self.app.show("PageBagList")
 
 
     def _build_config(self) -> Config:
@@ -2117,8 +2160,8 @@ class PageResult(ttk.Frame):
         bag.adapt_success = False
         bag.final_probs = {}
         bag.config_confirmed = False
-        messagebox.showinfo("已移除", "已移除商品，请返回选品页重新计算。")
-        self.on_show()
+        messagebox.showinfo("已移除", "已移除商品，已返回选品页，请重新计算。")
+        self.app.show("PagePick")
 
     def online(self):
         bag = self.app.ensure_current()
