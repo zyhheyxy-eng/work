@@ -1478,6 +1478,10 @@ class PageConfig(ttk.Frame):
         self.btn_filter.configure(state=("disabled" if self._readonly else "normal"))
         self._refresh_manual_controls()
 
+    def _refresh_manual_controls(self):
+        # 旧版遗留：当前页面已无手动控制区，避免空调用报错
+        return
+
     def _build_basic(self, parent):
         self._basic_entries = []
         base = ttk.Labelframe(parent, text="基础配置", padding=8)
