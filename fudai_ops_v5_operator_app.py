@@ -1425,12 +1425,15 @@ class PageMonthlyBag(ttk.Frame):
 
         media_box = ttk.Labelframe(parent, text="素材与通知", padding=8)
         media_box.pack(fill="x")
+        size_hint = {"封面图": "尺寸：290×261", "背景图": "尺寸：290×220"}
         for label, var in [("封面图", self.v_cover), ("背景图", self.v_bg), ("广告图", self.v_ad)]:
             r = ttk.Frame(media_box)
             r.pack(fill="x", pady=3)
             ttk.Label(r, text=f"{label}：", width=10).pack(side="left")
             ttk.Entry(r, textvariable=var).pack(side="left", fill="x", expand=True)
             ttk.Button(r, text="上传", command=lambda v=var: self._upload_file(v)).pack(side="left", padx=6)
+            if label in size_hint:
+                ttk.Label(r, text=size_hint[label], foreground="#6b7280").pack(side="left", padx=6)
 
         row_notify = ttk.Frame(media_box)
         row_notify.pack(fill="x", pady=3)
@@ -1861,12 +1864,15 @@ class PageConfig(ttk.Frame):
 
         media = ttk.Labelframe(parent, text="素材与分销", padding=8)
         media.pack(fill="x", pady=(8, 0))
+        size_hint = {"封面图": "尺寸：290×261", "背景图": "尺寸：290×220"}
         for label, var in [("封面图", self.v_cover), ("背景图", self.v_bg), ("广告图", self.v_ad)]:
             row = ttk.Frame(media)
             row.pack(fill="x", pady=3)
             ttk.Label(row, text=f"{label}：", width=10).pack(side="left")
             ttk.Entry(row, textvariable=var).pack(side="left", fill="x", expand=True)
             ttk.Button(row, text="上传", command=lambda v=var: self._upload_file(v)).pack(side="left", padx=6)
+            if label in size_hint:
+                ttk.Label(row, text=size_hint[label], foreground="#6b7280").pack(side="left", padx=6)
 
         row_notify = ttk.Frame(media)
         row_notify.pack(fill="x", pady=3)
