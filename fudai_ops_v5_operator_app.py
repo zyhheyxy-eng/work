@@ -309,6 +309,95 @@ def parse_dt(s: str, field_name: str) -> dt.datetime:
 def fmt_dt(t: dt.datetime) -> str:
     return t.strftime("%Y-%m-%d %H:%M")
 
+
+# -------------------------------
+# 统一的日期时间选择器（YYYY-MM-DD HH:MM）
+# -------------------------------
+def open_datetime_picker(owner: tk.Misc, var: tk.StringVar):
+    top = tk.Toplevel(owner)
+    top.title("选择时间")
+    top.geometry("320x360")
+    top.resizable(False, False)
+
+    try:
+        current_dt = parse_dt(var.get(), "时间")
+    except Exception:
+        current_dt = dt.datetime.now()
+    current = current_dt.date()
+    cur_h, cur_m = current_dt.hour, current_dt.minute
+
+    state = {"year": current.year, "month": current.month}
+
+    header = ttk.Frame(top)
+    header.pack(fill="x", pady=4)
+    lbl = ttk.Label(header, text="")
+    lbl.pack(side="left", padx=8)
+
+    btns: list[tk.Widget] = []
+    grid = ttk.Frame(top)
+    grid.pack(fill="both", expand=True, padx=6, pady=6)
+    header_row = ttk.Frame(grid)
+    header_row.pack(fill="x", pady=(0, 4))
+    for w in ["一", "二", "三", "四", "五", "六", "日"]:
+        ttk.Label(header_row, text=w, width=4, anchor="center").pack(side="left", expand=True)
+
+    def render():
+        lbl.configure(text=f"{state['year']}年{state['month']:02d}月")
+        for btn in btns:
+            btn.destroy()
+        btns.clear()
+        cal_mat = cal.monthcalendar(state["year"], state["month"])
+        for week in cal_mat:
+            row = ttk.Frame(grid)
+            row.pack(fill="x")
+            for d in week:
+                txt = f"{d:02d}" if d else ""
+                btn = ttk.Button(row, text=txt, width=4,
+                                 command=(lambda day=d: choose_day(day)) if d else None)
+                btn.pack(side="left", expand=True, padx=1, pady=1)
+                btns.append(btn)
+
+    def prev_month():
+        if state["month"] == 1:
+            state["month"] = 12
+            state["year"] -= 1
+        else:
+            state["month"] -= 1
+        render()
+
+    def next_month():
+        if state["month"] == 12:
+            state["month"] = 1
+            state["year"] += 1
+        else:
+            state["month"] += 1
+        render()
+
+    ttk.Button(header, text="<", command=prev_month).pack(side="left", padx=(8, 4))
+    ttk.Button(header, text=">", command=next_month).pack(side="left")
+
+    time_box = ttk.Frame(top, padding=6)
+    time_box.pack(fill="x", pady=(4, 0))
+    ttk.Label(time_box, text="时间：").pack(side="left")
+    sp_hour = tk.Spinbox(time_box, from_=0, to=23, width=4, format="%02.0f")
+    sp_min = tk.Spinbox(time_box, from_=0, to=59, width=4, format="%02.0f")
+    sp_hour.delete(0, "end"); sp_hour.insert(0, f"{cur_h:02d}")
+    sp_min.delete(0, "end"); sp_min.insert(0, f"{cur_m:02d}")
+    sp_hour.pack(side="left", padx=(2, 4))
+    ttk.Label(time_box, text=":").pack(side="left")
+    sp_min.pack(side="left", padx=(4, 4))
+
+    def choose_day(day: int):
+        if day <= 0:
+            return
+        hh = int(sp_hour.get() or 0)
+        mm = int(sp_min.get() or 0)
+        val = dt.datetime(state["year"], state["month"], day, hh, mm).strftime("%Y-%m-%d %H:%M")
+        var.set(val)
+        top.destroy()
+
+    render()
+
 def _safe_kw(val: str, placeholder: str) -> str:
     val = (val or "").strip()
     return "" if val == placeholder else val
@@ -1224,90 +1313,6 @@ class PageBagList(ttk.Frame):
         lbl.configure(state="disabled")
         ttk.Button(win, text="关闭", command=win.destroy).pack(pady=(0, 10))
 
-    def _open_datetime_picker(self, var: tk.StringVar):
-        top = tk.Toplevel(self)
-        top.title("选择时间")
-        top.geometry("320x360")
-        top.resizable(False, False)
-
-        try:
-            current_dt = parse_dt(var.get(), "时间")
-        except Exception:
-            current_dt = dt.datetime.now()
-        current = current_dt.date()
-        cur_h, cur_m = current_dt.hour, current_dt.minute
-
-        state = {"year": current.year, "month": current.month}
-
-        header = ttk.Frame(top)
-        header.pack(fill="x", pady=4)
-        lbl = ttk.Label(header, text="")
-        lbl.pack(side="left", padx=8)
-
-        def render():
-            lbl.configure(text=f"{state['year']}年{state['month']:02d}月")
-            for btn in btns:
-                btn.destroy()
-            btns.clear()
-            cal_mat = cal.monthcalendar(state["year"], state["month"])
-            for week in cal_mat:
-                row = ttk.Frame(grid)
-                row.pack(fill="x")
-                for d in week:
-                    txt = f"{d:02d}" if d else ""
-                    btn = ttk.Button(row, text=txt, width=4,
-                                     command=(lambda day=d: choose_day(day)) if d else None)
-                    btn.pack(side="left", expand=True, padx=1, pady=1)
-                    btns.append(btn)
-
-        def prev_month():
-            if state["month"] == 1:
-                state["month"] = 12
-                state["year"] -= 1
-            else:
-                state["month"] -= 1
-            render()
-
-        def next_month():
-            if state["month"] == 12:
-                state["month"] = 1
-                state["year"] += 1
-            else:
-                state["month"] += 1
-            render()
-
-        ttk.Button(header, text="<", command=prev_month).pack(side="left", padx=(8, 4))
-        ttk.Button(header, text=">", command=next_month).pack(side="left")
-
-        grid = ttk.Frame(top)
-        grid.pack(fill="both", expand=True, padx=6, pady=6)
-        header_row = ttk.Frame(grid)
-        header_row.pack(fill="x", pady=(0, 4))
-        for w in ["一", "二", "三", "四", "五", "六", "日"]:
-            ttk.Label(header_row, text=w, width=4, anchor="center").pack(side="left", expand=True)
-        btns: list[tk.Widget] = []
-
-        time_box = ttk.Frame(top, padding=6)
-        time_box.pack(fill="x", pady=(4, 0))
-        ttk.Label(time_box, text="时间：").pack(side="left")
-        sp_hour = tk.Spinbox(time_box, from_=0, to=23, width=4, format="%02.0f")
-        sp_min = tk.Spinbox(time_box, from_=0, to=59, width=4, format="%02.0f")
-        sp_hour.delete(0, "end"); sp_hour.insert(0, f"{cur_h:02d}")
-        sp_min.delete(0, "end"); sp_min.insert(0, f"{cur_m:02d}")
-        sp_hour.pack(side="left", padx=(2, 4))
-        ttk.Label(time_box, text=":").pack(side="left")
-        sp_min.pack(side="left", padx=(4, 4))
-
-        def choose_day(day: int):
-            if day <= 0:
-                return
-            hh = int(sp_hour.get() or 0)
-            mm = int(sp_min.get() or 0)
-            val = dt.datetime(state["year"], state["month"], day, hh, mm).strftime("%Y-%m-%d %H:%M")
-            var.set(val)
-            top.destroy()
-
-        render()
 
     def _delete_bag(self, bag_id: str):
         bag = self.app.bags.get(bag_id)
@@ -1408,7 +1413,7 @@ class PageMonthlyBag(ttk.Frame):
             ent = ttk.Entry(r, textvariable=var, width=20)
             ent.pack(side="left")
             if with_picker:
-                ttk.Button(r, text="选择时间", command=lambda v=var: self._open_datetime_picker(v)).pack(side="left", padx=4)
+                ttk.Button(r, text="选择时间", command=lambda v=var: open_datetime_picker(self, v)).pack(side="left", padx=4)
             if hint:
                 ttk.Label(r, text=hint, foreground="#9ca3af").pack(side="left", padx=8)
 
@@ -1492,18 +1497,43 @@ class PageMonthlyBag(ttk.Frame):
         return state
 
     def _import_file(self):
-        path = filedialog.askopenfilename(filetypes=[("JSON 文件", "*.json"), ("CSV 文件", "*.csv"), ("所有文件", "*.*")])
+        path = filedialog.askopenfilename(
+            filetypes=[("Excel 文件", "*.xlsx"), ("JSON 文件", "*.json"), ("CSV 文件", "*.csv"), ("所有文件", "*.*")]
+        )
         if not path:
             return
         try:
             items: List[Item] = []
-            if path.lower().endswith(".json"):
+            payload = []
+            lower = path.lower()
+            if lower.endswith(".json"):
                 with open(path, "r", encoding="utf-8") as f:
                     payload = json.load(f)
                 if isinstance(payload, dict):
                     payload = payload.get("items", [])
+            elif lower.endswith(".xlsx"):
+                try:
+                    import openpyxl  # type: ignore
+                except Exception:
+                    messagebox.showerror("导入失败", "请先安装 openpyxl 以支持 Excel 导入（pip install openpyxl）。")
+                    return
+                wb = openpyxl.load_workbook(path, data_only=True)
+                ws = wb.active
+                rows_iter = list(ws.iter_rows(values_only=True))
+                if not rows_iter:
+                    payload = []
+                else:
+                    header = [str(c or "").strip().lower() for c in rows_iter[0]]
+                    data_rows = rows_iter[1:]
+                    for row in data_rows:
+                        if not any(row):
+                            continue
+                        rec: Dict[str, object] = {}
+                        for key, cell in zip(header, row):
+                            if key:
+                                rec[key] = cell
+                        payload.append(rec)
             else:
-                payload = []
                 with open(path, "r", encoding="utf-8") as f:
                     for line in f:
                         parts = [p.strip() for p in line.split(",")]
@@ -1599,90 +1629,6 @@ class PageMonthlyBag(ttk.Frame):
             return
         var.set(path)
 
-    def _open_datetime_picker(self, var: tk.StringVar):
-        top = tk.Toplevel(self)
-        top.title("选择时间")
-        top.geometry("320x360")
-        top.resizable(False, False)
-
-        try:
-            current_dt = parse_dt(var.get(), "时间")
-        except Exception:
-            current_dt = dt.datetime.now()
-        current = current_dt.date()
-        cur_h, cur_m = current_dt.hour, current_dt.minute
-
-        state = {"year": current.year, "month": current.month}
-
-        header = ttk.Frame(top)
-        header.pack(fill="x", pady=4)
-        lbl = ttk.Label(header, text="")
-        lbl.pack(side="left", padx=8)
-
-        def render():
-            lbl.configure(text=f"{state['year']}年{state['month']:02d}月")
-            for btn in btns:
-                btn.destroy()
-            btns.clear()
-            cal_mat = cal.monthcalendar(state["year"], state["month"])
-            for week in cal_mat:
-                row = ttk.Frame(grid)
-                row.pack(fill="x")
-                for d in week:
-                    txt = f"{d:02d}" if d else ""
-                    btn = ttk.Button(row, text=txt, width=4,
-                                     command=(lambda day=d: choose_day(day)) if d else None)
-                    btn.pack(side="left", expand=True, padx=1, pady=1)
-                    btns.append(btn)
-
-        def prev_month():
-            if state["month"] == 1:
-                state["month"] = 12
-                state["year"] -= 1
-            else:
-                state["month"] -= 1
-            render()
-
-        def next_month():
-            if state["month"] == 12:
-                state["month"] = 1
-                state["year"] += 1
-            else:
-                state["month"] += 1
-            render()
-
-        ttk.Button(header, text="<", command=prev_month).pack(side="left", padx=(8, 4))
-        ttk.Button(header, text=">", command=next_month).pack(side="left")
-
-        grid = ttk.Frame(top)
-        grid.pack(fill="both", expand=True, padx=6, pady=6)
-        header_row = ttk.Frame(grid)
-        header_row.pack(fill="x", pady=(0, 4))
-        for w in ["一", "二", "三", "四", "五", "六", "日"]:
-            ttk.Label(header_row, text=w, width=4, anchor="center").pack(side="left", expand=True)
-        btns: list[tk.Widget] = []
-
-        time_box = ttk.Frame(top, padding=6)
-        time_box.pack(fill="x", pady=(4, 0))
-        ttk.Label(time_box, text="时间：").pack(side="left")
-        sp_hour = tk.Spinbox(time_box, from_=0, to=23, width=4, format="%02.0f")
-        sp_min = tk.Spinbox(time_box, from_=0, to=59, width=4, format="%02.0f")
-        sp_hour.delete(0, "end"); sp_hour.insert(0, f"{cur_h:02d}")
-        sp_min.delete(0, "end"); sp_min.insert(0, f"{cur_m:02d}")
-        sp_hour.pack(side="left", padx=(2, 4))
-        ttk.Label(time_box, text=":").pack(side="left")
-        sp_min.pack(side="left", padx=(4, 4))
-
-        def choose_day(day: int):
-            if day <= 0:
-                return
-            hh = int(sp_hour.get() or 0)
-            mm = int(sp_min.get() or 0)
-            val = dt.datetime(state["year"], state["month"], day, hh, mm).strftime("%Y-%m-%d %H:%M")
-            var.set(val)
-            top.destroy()
-
-        render()
 
 # -------------------------------
 # Page 2：参数配置页（支持只读模式）
@@ -1906,7 +1852,7 @@ class PageConfig(ttk.Frame):
             ent = ttk.Entry(r, textvariable=var, width=18)
             ent.pack(side="left")
             self._basic_entries.append(ent)
-            ttk.Button(r, text="选择时间", command=lambda v=var: self._open_datetime_picker(v)).pack(side="left", padx=4)
+            ttk.Button(r, text="选择时间", command=lambda v=var: open_datetime_picker(self, v)).pack(side="left", padx=4)
             if hint:
                 ttk.Label(r, text=hint, foreground="#9ca3af").pack(side="left", padx=8)
 
