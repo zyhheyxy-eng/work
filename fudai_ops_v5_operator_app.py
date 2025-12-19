@@ -22,6 +22,7 @@ from typing import Dict, List, Optional, Tuple
 import datetime as dt
 import calendar as cal
 import random
+import json
 
 # -------------------------------
 # 常量
@@ -117,6 +118,26 @@ class BagState:
         if self.selected_ids is None: self.selected_ids = set()
         if self.manual_added_ids is None: self.manual_added_ids = set()
         if self.final_probs is None: self.final_probs = {}
+
+
+@dataclass
+class MonthlyBagState:
+    bag_name: str = ""
+    P: float = 0.0
+    d: float = 0.95
+    up_time: Optional[dt.datetime] = None
+    down_time: Optional[dt.datetime] = None
+    cover_path: str = ""
+    bg_path: str = ""
+    ad_path: str = ""
+    notify_person: str = "当前操作人"
+    remark: str = ""
+    items: List[Item] = None
+    status: str = "未上线"
+
+    def __post_init__(self):
+        if self.items is None:
+            self.items = []
 
 # -------------------------------
 # 内部计算（隐藏）
@@ -306,6 +327,7 @@ class App(tk.Tk):
 
         # 多福袋
         self.bags: Dict[str, BagState] = {}
+        self.monthly_bag: MonthlyBagState = MonthlyBagState()
         self.settings = {
             'reminder_enabled': True,
             'reminder_time': '16:00',
@@ -328,7 +350,7 @@ class App(tk.Tk):
         container.columnconfigure(0, weight=1)
 
         self.frames = {}
-        for F in (PageBagList, PageConfig, PagePick, PageResult):
+        for F in (PageBagList, PageConfig, PagePick, PageResult, PageMonthlyBag):
             frame = F(container, self)
             self.frames[F.__name__] = frame
             frame.grid(row=0, column=0, sticky="nsew")
@@ -972,6 +994,7 @@ class PageBagList(ttk.Frame):
         top.pack(fill="x", pady=(0, 8))
         ttk.Button(top, text="新建福袋", command=self.new_bag).pack(side="left")
         ttk.Button(top, text="提醒设置", command=self.open_reminder_settings).pack(side="left", padx=8)
+        ttk.Button(top, text="设置月度福袋", command=self.open_monthly).pack(side="left", padx=8)
 
         # 筛选区
         filt = ttk.Frame(self)
@@ -1042,6 +1065,9 @@ class PageBagList(ttk.Frame):
 
     def open_reminder_settings(self):
         ReminderSettingsDialog(self, self.app)
+
+    def open_monthly(self):
+        self.app.show("PageMonthlyBag")
 
     def on_show(self):
         self.refresh()
@@ -1293,6 +1319,370 @@ class PageBagList(ttk.Frame):
             self.app.current_bag_id = None
         del self.app.bags[bag_id]
         self.refresh()
+
+
+class PageMonthlyBag(ttk.Frame):
+    def __init__(self, parent, app: App):
+        super().__init__(parent)
+        self.app = app
+
+        ttk.Label(self, text="月度福袋设置", font=("Microsoft YaHei UI", 16, "bold")).pack(anchor="w", pady=(0, 10))
+        ttk.Button(self, text="返回列表", command=lambda: self.app.show("PageBagList")).place(relx=1.0, y=6, x=-10, anchor="ne")
+
+        container = ttk.Frame(self)
+        container.pack(fill="both", expand=True)
+        container.columnconfigure(0, weight=1)
+        container.columnconfigure(1, weight=1)
+
+        # vars
+        self.v_name = tk.StringVar(value="")
+        self.v_P = tk.StringVar(value="")
+        self.v_d = tk.StringVar(value="0.95")
+        self.v_up = tk.StringVar(value="")
+        self.v_down = tk.StringVar(value="")
+        self.v_cover = tk.StringVar(value="")
+        self.v_bg = tk.StringVar(value="")
+        self.v_ad = tk.StringVar(value="")
+        self.v_notify = tk.StringVar(value="当前操作人")
+        self.v_remark = tk.StringVar(value="")
+
+        left = ttk.Frame(container)
+        right = ttk.Frame(container)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
+        right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
+
+        self._build_basic(left)
+        self._build_media(right)
+
+        preview = ttk.Labelframe(container, text="等级商品预览区（导入后展示）", padding=8)
+        preview.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
+        container.rowconfigure(1, weight=1)
+
+        tab_bar = ttk.Frame(preview)
+        tab_bar.pack(anchor="w", pady=(0, 6))
+        self.preview_level = tk.StringVar(value="L")
+        for lvl in LEVELS:
+            ttk.Radiobutton(tab_bar, text=LEVEL_NAME[lvl], value=lvl, variable=self.preview_level,
+                            command=self.refresh_preview).pack(side="left", padx=(0, 8))
+
+        cols = ("id", "name", "level", "stock", "price", "cost", "steam", "disc", "src")
+        self.tree_preview = ttk.Treeview(preview, columns=cols, show="headings", height=10)
+        for c, t, w, a in [
+            ("id", "ID", 80, "center"),
+            ("name", "游戏名", 200, "w"),
+            ("level", "等级", 80, "center"),
+            ("stock", "库存", 80, "center"),
+            ("price", "售价", 90, "e"),
+            ("cost", "成本", 90, "e"),
+            ("steam", "Steam史低", 100, "e"),
+            ("disc", "折扣状态", 120, "center"),
+            ("src", "来源", 90, "center"),
+        ]:
+            self.tree_preview.heading(c, text=t)
+            self.tree_preview.column(c, width=w, anchor=a)
+        self.tree_preview.pack(fill="both", expand=True)
+
+        self.lbl_hint = ttk.Label(preview, text="请先导入。", foreground="#6b7280")
+        self.lbl_hint.pack(anchor="w", pady=(4, 0))
+
+        actions = ttk.Frame(self, padding=8)
+        actions.pack(fill="x", pady=(8, 0))
+        ttk.Button(actions, text="导入", command=self._import_file).pack(side="left")
+        self.btn_online = ttk.Button(actions, text="上线", command=self._online)
+        self.btn_online.pack(side="left", padx=8)
+        self.lbl_status = ttk.Label(actions, text="", foreground="#6b7280")
+        self.lbl_status.pack(side="left", padx=8)
+
+    def on_show(self):
+        self._load_state()
+        self.refresh_preview()
+
+    def _build_basic(self, parent):
+        box = ttk.Labelframe(parent, text="基础设置", padding=8)
+        box.pack(fill="x", pady=(0, 10))
+
+        def row(label, var, hint="", with_picker=False):
+            r = ttk.Frame(box)
+            r.pack(fill="x", pady=4)
+            ttk.Label(r, text=label, width=14).pack(side="left")
+            ent = ttk.Entry(r, textvariable=var, width=20)
+            ent.pack(side="left")
+            if with_picker:
+                ttk.Button(r, text="选择时间", command=lambda v=var: self._open_datetime_picker(v)).pack(side="left", padx=4)
+            if hint:
+                ttk.Label(r, text=hint, foreground="#9ca3af").pack(side="left", padx=8)
+
+        row("福袋名称", self.v_name)
+        row("单抽标价 P", self.v_P)
+        row("十连折扣系数 d", self.v_d, "如 0.97=97折")
+        row("上架时间", self.v_up, with_picker=True)
+        row("下架时间", self.v_down, "需晚于上架", with_picker=True)
+
+        media_box = ttk.Labelframe(parent, text="素材与通知", padding=8)
+        media_box.pack(fill="x")
+        for label, var in [("封面图", self.v_cover), ("背景图", self.v_bg), ("广告图", self.v_ad)]:
+            r = ttk.Frame(media_box)
+            r.pack(fill="x", pady=3)
+            ttk.Label(r, text=f"{label}：", width=10).pack(side="left")
+            ttk.Entry(r, textvariable=var).pack(side="left", fill="x", expand=True)
+            ttk.Button(r, text="上传", command=lambda v=var: self._upload_file(v)).pack(side="left", padx=6)
+
+        row_notify = ttk.Frame(media_box)
+        row_notify.pack(fill="x", pady=3)
+        ttk.Label(row_notify, text="通知人：", width=10).pack(side="left")
+        ttk.Entry(row_notify, textvariable=self.v_notify, width=22).pack(side="left")
+
+        row_remark = ttk.Frame(media_box)
+        row_remark.pack(fill="x", pady=3)
+        ttk.Label(row_remark, text="备注：", width=10).pack(side="left")
+        ttk.Entry(row_remark, textvariable=self.v_remark).pack(side="left", fill="x", expand=True)
+
+    def _build_media(self, parent):
+        box = ttk.Labelframe(parent, text="关键配置（概要）", padding=8)
+        box.pack(fill="x")
+        ttk.Label(box, text="在此页面仅做基础设置与导入，详细概率/成本规则沿用主流程。", foreground="#6b7280").pack(anchor="w")
+
+    def _assign_level_default(self, cost: float) -> str:
+        for lvl in LEVELS:
+            lo, hi = DEFAULT_RANGE[lvl]
+            if lo <= cost <= hi:
+                return lvl
+        return "C"
+
+    def _load_state(self):
+        state = self.app.monthly_bag
+        self.v_name.set(state.bag_name or "")
+        self.v_P.set(f"{state.P}" if state.P else "")
+        self.v_d.set(f"{state.d:.2f}" if state.d else "")
+        self.v_up.set(fmt_dt(state.up_time) if state.up_time else "")
+        self.v_down.set(fmt_dt(state.down_time) if state.down_time else "")
+        self.v_cover.set(state.cover_path or "")
+        self.v_bg.set(state.bg_path or "")
+        self.v_ad.set(state.ad_path or "")
+        self.v_notify.set(state.notify_person or "当前操作人")
+        self.v_remark.set(state.remark or "")
+        self.lbl_status.configure(text=f"当前状态：{state.status}")
+
+    def _save_state(self) -> MonthlyBagState:
+        name = self.v_name.get().strip()
+        if not name:
+            raise ValueError("福袋名称不能为空")
+        P = float(self.v_P.get())
+        if P <= 0:
+            raise ValueError("单抽标价需大于0")
+        d = float(self.v_d.get())
+        if not (0.80 <= d <= 1.00):
+            raise ValueError("十连折扣系数需在0.80~1.00之间")
+        up = parse_dt(self.v_up.get(), "上架时间")
+        down = parse_dt(self.v_down.get(), "下架时间")
+        if down <= up:
+            raise ValueError("下架时间必须晚于上架时间")
+
+        state = self.app.monthly_bag
+        state.bag_name = name
+        state.P = P
+        state.d = d
+        state.up_time = up
+        state.down_time = down
+        state.cover_path = self.v_cover.get().strip()
+        state.bg_path = self.v_bg.get().strip()
+        state.ad_path = self.v_ad.get().strip()
+        state.notify_person = self.v_notify.get().strip() or "当前操作人"
+        state.remark = self.v_remark.get().strip()
+        return state
+
+    def _import_file(self):
+        path = filedialog.askopenfilename(filetypes=[("JSON 文件", "*.json"), ("CSV 文件", "*.csv"), ("所有文件", "*.*")])
+        if not path:
+            return
+        try:
+            items: List[Item] = []
+            if path.lower().endswith(".json"):
+                with open(path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                if isinstance(payload, dict):
+                    payload = payload.get("items", [])
+            else:
+                payload = []
+                with open(path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        parts = [p.strip() for p in line.split(",")]
+                        if len(parts) < 5:
+                            continue
+                        payload.append({
+                            "id": parts[0],
+                            "name": parts[1],
+                            "price": parts[2],
+                            "cost": parts[3],
+                            "stock": parts[4],
+                        })
+
+            now = dt.datetime.now()
+            for row in payload or []:
+                try:
+                    it = Item(
+                        id=int(row.get("id", 0)),
+                        name=str(row.get("name", "")) or f"导入商品{len(items)+1}",
+                        price=float(row.get("price", 0.0)),
+                        cost=float(row.get("cost", 0.0)),
+                        stock=int(row.get("stock", 0)),
+                        steam_lowest=float(row.get("steam_lowest", row.get("steam_low", row.get("steam_lowest_price", 0.0)))),
+                        discount_status=str(row.get("discount_status", "无活动")),
+                        discount_end=None,
+                    )
+                    lvl = row.get("level") or self._assign_level_default(it.cost)
+                    it.level = lvl if lvl in LEVELS else self._assign_level_default(it.cost)
+                    disc_end_raw = row.get("discount_end") or row.get("discount_end_at")
+                    if disc_end_raw:
+                        try:
+                            it.discount_end = dt.datetime.fromisoformat(str(disc_end_raw))
+                        except Exception:
+                            it.discount_end = None
+                    if it.discount_end and it.discount_end <= now:
+                        it.discount_status = "无活动"
+                    setattr(it, "source", row.get("source", "import"))
+                    items.append(it)
+                except Exception:
+                    continue
+
+            if not items:
+                messagebox.showwarning("导入失败", "文件中未解析到有效商品。")
+                return
+
+            state = self.app.monthly_bag
+            state.items = items
+            self.refresh_preview()
+            messagebox.showinfo("导入成功", f"成功导入 {len(items)} 个商品。")
+        except Exception as e:
+            messagebox.showerror("导入失败", str(e))
+
+    def refresh_preview(self):
+        self.tree_preview.delete(*self.tree_preview.get_children())
+        items = self.app.monthly_bag.items or []
+        if not items:
+            self.lbl_hint.configure(text="请先导入。")
+            return
+        lvl = self.preview_level.get()
+        rows = [it for it in items if it.level == lvl]
+        if not rows:
+            self.lbl_hint.configure(text=f"{LEVEL_NAME.get(lvl, lvl)} 暂无导入商品。")
+            return
+        now = dt.datetime.now()
+        rows.sort(key=lambda x: x.id)
+        for it in rows:
+            disc = it.discount_status or "无活动"
+            if it.discount_end and it.discount_end > now:
+                remain = it.discount_end - now
+                if remain.total_seconds() <= 24 * 3600:
+                    disc = f"即将结束({int(remain.total_seconds()//3600)}h)"
+            src = getattr(it, "source", "import")
+            self.tree_preview.insert("", "end", values=(it.id, it.name, LEVEL_BADGE[it.level], it.stock,
+                                                          f"{it.price:.2f}", f"{it.cost:.2f}", f"{it.steam_lowest:.2f}", disc, src))
+        self.lbl_hint.configure(text=f"当前等级展示 {len(rows)} 条。")
+
+    def _online(self):
+        try:
+            state = self._save_state()
+        except Exception as e:
+            messagebox.showerror("输入错误", str(e))
+            return
+        if not state.items:
+            messagebox.showwarning("无法上线", "请先导入商品后再上线。")
+            return
+        state.status = "已上线"
+        messagebox.showinfo("上线成功", "月度福袋已上线，返回首页。")
+        self.app.show("PageBagList")
+
+    def _upload_file(self, var: tk.StringVar):
+        path = filedialog.askopenfilename()
+        if not path:
+            return
+        var.set(path)
+
+    def _open_datetime_picker(self, var: tk.StringVar):
+        top = tk.Toplevel(self)
+        top.title("选择时间")
+        top.geometry("320x360")
+        top.resizable(False, False)
+
+        try:
+            current_dt = parse_dt(var.get(), "时间")
+        except Exception:
+            current_dt = dt.datetime.now()
+        current = current_dt.date()
+        cur_h, cur_m = current_dt.hour, current_dt.minute
+
+        state = {"year": current.year, "month": current.month}
+
+        header = ttk.Frame(top)
+        header.pack(fill="x", pady=4)
+        lbl = ttk.Label(header, text="")
+        lbl.pack(side="left", padx=8)
+
+        def render():
+            lbl.configure(text=f"{state['year']}年{state['month']:02d}月")
+            for btn in btns:
+                btn.destroy()
+            btns.clear()
+            cal_mat = cal.monthcalendar(state["year"], state["month"])
+            for week in cal_mat:
+                row = ttk.Frame(grid)
+                row.pack(fill="x")
+                for d in week:
+                    txt = f"{d:02d}" if d else ""
+                    btn = ttk.Button(row, text=txt, width=4,
+                                     command=(lambda day=d: choose_day(day)) if d else None)
+                    btn.pack(side="left", expand=True, padx=1, pady=1)
+                    btns.append(btn)
+
+        def prev_month():
+            if state["month"] == 1:
+                state["month"] = 12
+                state["year"] -= 1
+            else:
+                state["month"] -= 1
+            render()
+
+        def next_month():
+            if state["month"] == 12:
+                state["month"] = 1
+                state["year"] += 1
+            else:
+                state["month"] += 1
+            render()
+
+        ttk.Button(header, text="<", command=prev_month).pack(side="left", padx=(8, 4))
+        ttk.Button(header, text=">", command=next_month).pack(side="left")
+
+        grid = ttk.Frame(top)
+        grid.pack(fill="both", expand=True, padx=6, pady=6)
+        header_row = ttk.Frame(grid)
+        header_row.pack(fill="x", pady=(0, 4))
+        for w in ["一", "二", "三", "四", "五", "六", "日"]:
+            ttk.Label(header_row, text=w, width=4, anchor="center").pack(side="left", expand=True)
+        btns: list[tk.Widget] = []
+
+        time_box = ttk.Frame(top, padding=6)
+        time_box.pack(fill="x", pady=(4, 0))
+        ttk.Label(time_box, text="时间：").pack(side="left")
+        sp_hour = tk.Spinbox(time_box, from_=0, to=23, width=4, format="%02.0f")
+        sp_min = tk.Spinbox(time_box, from_=0, to=59, width=4, format="%02.0f")
+        sp_hour.delete(0, "end"); sp_hour.insert(0, f"{cur_h:02d}")
+        sp_min.delete(0, "end"); sp_min.insert(0, f"{cur_m:02d}")
+        sp_hour.pack(side="left", padx=(2, 4))
+        ttk.Label(time_box, text=":").pack(side="left")
+        sp_min.pack(side="left", padx=(4, 4))
+
+        def choose_day(day: int):
+            if day <= 0:
+                return
+            hh = int(sp_hour.get() or 0)
+            mm = int(sp_min.get() or 0)
+            val = dt.datetime(state["year"], state["month"], day, hh, mm).strftime("%Y-%m-%d %H:%M")
+            var.set(val)
+            top.destroy()
+
+        render()
 
 # -------------------------------
 # Page 2：参数配置页（支持只读模式）
