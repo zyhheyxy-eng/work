@@ -424,6 +424,7 @@ class App(tk.Tk):
             'reminder_phone': '13800000000',
             'notify_enabled': True,
             'notify_supervisor_on_force': True,
+            'is_super_admin': False,
             'supervisor_name': '上级运营',
             'supervisor_phone': '13900000000',
         }
@@ -485,9 +486,16 @@ class App(tk.Tk):
     def _profit_rate(self, cfg: Config, selected: List[Item], probs: Dict[int, float]) -> float:
         if not cfg or not selected or not probs:
             return 0.0
+        profit_val = self._profit_value(cfg, selected, probs)
+        P_eff = calc_p_eff(cfg.P, cfg.d, cfg.q)
+        return (profit_val / P_eff) if (P_eff and profit_val is not None) else 0.0
+
+    def _profit_value(self, cfg: Config, selected: List[Item], probs: Dict[int, float]) -> Optional[float]:
+        if not cfg or not selected or not probs:
+            return None
         P_eff = calc_p_eff(cfg.P, cfg.d, cfg.q)
         ec = expected_cost_total(cfg, selected, probs)
-        return (P_eff - ec) / P_eff if P_eff > 0 else 0.0
+        return P_eff - ec
 
     def build_config_snapshot(self, bag: BagState) -> str:
         cfg = bag.cfg
@@ -1026,32 +1034,40 @@ class ConfigPopup(tk.Toplevel):
         cfg = bag.cfg
         selected = [it for it in self.app.catalog if it.id in bag.selected_ids]
         probs = bag.final_probs or {}
-        pr = self.app._profit_rate(cfg, selected, probs) if probs else None
+        profit_val = self.app._profit_value(cfg, selected, probs)
 
-        if not probs or not selected:
+        super_admin = bool(self.app.settings.get('is_super_admin', False))
+
+        if not probs or not selected or profit_val is None:
             self.btn_online.configure(state="disabled")
             self.btn_force.configure(state="disabled")
             self.note.configure(text="缺少最终概率或选品结果，需先计算。")
             return
 
-        pass_ok = pr is not None and pr >= cfg.g - 1e-12
-        if pass_ok:
+        if profit_val >= -1e-12:
             self.btn_online.configure(state="normal")
             self.btn_force.configure(state="disabled")
-            self.note.configure(text="预计利润率达标：可确认上线。")
+            self.note.configure(text="预测利润为非负：可直接上线，无需强制上线。")
         else:
             self.btn_online.configure(state="disabled")
-            self.btn_force.configure(state="normal")
-            self.note.configure(text="预计利润率未达标：仅可强制上线（需记录并通知上级审批）。")
+            if super_admin:
+                self.btn_force.configure(state="normal")
+                self.note.configure(text="预测利润为负：仅超级管理员可强制上线并记录审批。")
+            else:
+                self.btn_force.configure(state="disabled")
+                self.note.configure(text="预测利润为负：普通运营不可上线，请联系超管处理。")
 
     def _online(self):
         bag = self.bag
         cfg = bag.cfg
         selected = [it for it in self.app.catalog if it.id in bag.selected_ids]
         probs = bag.final_probs or {}
-        pr = self.app._profit_rate(cfg, selected, probs) if probs else None
-        if pr is None or pr < cfg.g - 1e-12:
-            messagebox.showwarning("不允许上线", "预计利润率未达标，需改为强制上线。")
+        profit_val = self.app._profit_value(cfg, selected, probs)
+        if profit_val is None:
+            messagebox.showwarning("不允许上线", "缺少最终概率或选品结果，无法上线。")
+            return
+        if profit_val < -1e-12:
+            messagebox.showwarning("不允许上线", "预测利润为负，需超级管理员执行强制上线。")
             return
         bag.status = "已上线"
         messagebox.showinfo("上线成功", "上线成功！已返回福袋列表。")
@@ -1061,8 +1077,19 @@ class ConfigPopup(tk.Toplevel):
 
     def _force_online(self):
         bag = self.bag
+        super_admin = bool(self.app.settings.get('is_super_admin', False))
+        if not super_admin:
+            messagebox.showwarning("权限不足", "仅超级管理员可在预测利润为负时强制上线。")
+            return
         if not bag.final_probs or not bag.selected_ids:
             messagebox.showwarning("需要先计算", "请先完成计算并生成最终概率。")
+            return
+        profit_val = self.app._profit_value(bag.cfg, [it for it in self.app.catalog if it.id in bag.selected_ids], bag.final_probs)
+        if profit_val is None:
+            messagebox.showwarning("需要先计算", "缺少预测利润，无法强制上线。")
+            return
+        if profit_val >= -1e-12:
+            messagebox.showinfo("建议直接上线", "预测利润为非负，可直接上线，无需强制流程。")
             return
         sup_name = str(self.app.settings.get('supervisor_name', '上级运营'))
         sup_phone = str(self.app.settings.get('supervisor_phone', ''))
@@ -1277,8 +1304,25 @@ class PageBagList(ttk.Frame):
             bag.status = "已下架"
             messagebox.showinfo("已下线", "已手动下线该福袋，立即生效，与时间配置无关。")
         else:
-            bag.status = "已上线"
-            messagebox.showinfo("已上线", "已手动上线该福袋，立即生效，与时间配置无关。")
+            if not bag.final_probs or not bag.selected_ids:
+                messagebox.showwarning("禁止上线", "缺少最终概率或选品结果，请先完成选品与计算。")
+                return
+            profit_val = self.app._profit_value(bag.cfg, [it for it in self.app.catalog if it.id in bag.selected_ids], bag.final_probs)
+            if profit_val is None:
+                messagebox.showwarning("禁止上线", "缺少预测利润，无法判断上线风险。")
+                return
+            if profit_val < -1e-12:
+                if not self.app.settings.get('is_super_admin', False):
+                    messagebox.showwarning("需超管操作", "预测利润为负，普通运营不可上线，请联系超级管理员强制上线。")
+                    return
+                if self.app.settings.get('notify_supervisor_on_force', True) and self.app.settings.get('notify_enabled', True):
+                    messagebox.showinfo("已通知上级", "预测利润为负，已记录强制上线并通知上级审批（占位交互）。")
+                else:
+                    messagebox.showinfo("已记录", "预测利润为负，已记录强制上线申请（占位交互）。")
+                bag.status = "待审批"
+            else:
+                bag.status = "已上线"
+                messagebox.showinfo("已上线", "已手动上线该福袋，立即生效，与时间配置无关。")
         self.refresh()
 
     def _show_detail(self, bag_id: str):
@@ -2800,19 +2844,19 @@ class PageResult(ttk.Frame):
             self.tree.insert("", "end", iid=str(it_id), values=(name, lvl, stock, f"{cost:.2f}", f"{p * 100:.4f}%", remain, op))
 
         P_eff = calc_p_eff(cfg.P, cfg.d, cfg.q)
-        ec = expected_cost_total(cfg, selected, probs) if probs else float("inf")
-        profit_rate = (P_eff - ec) / P_eff if P_eff > 0 else 0.0
+        profit_val = self.app._profit_value(cfg, selected, probs) if probs else None
 
-        if probs:
-            if profit_rate >= cfg.g - 1e-12:
-                self.banner.configure(bg="#1f6f3c", fg="white", text=f"✅ 预计利润率 {profit_rate * 100:.2f}% 达标（目标 {cfg.g * 100:.0f}%）")
-                self.note.configure(text="请点击「查看当前配置」确认后再上线。")
-            else:
-                self.banner.configure(bg="#8a1c1c", fg="white", text=f"⚠️ 预计利润率 {profit_rate * 100:.2f}% 低于目标 {cfg.g * 100:.0f}%")
-                self.note.configure(text="未达标仅可在「查看当前配置」弹窗中选择强制上线。")
-        else:
+        if not probs or profit_val is None:
             self.banner.configure(bg="#8a1c1c", fg="white", text="❌ 缺少最终概率，请返回选品页完成计算。")
             self.note.configure(text="需先完成计算后再决定上线。")
+        else:
+            profit_rate = (profit_val / P_eff) if P_eff > 0 else 0.0
+            if profit_val >= -1e-12:
+                self.banner.configure(bg="#1f6f3c", fg="white", text=f"✅ 预测利润 {profit_val:.2f} 元（利润率 {profit_rate * 100:.2f}% ，目标利润率仅供参考 {cfg.g * 100:.0f}%）")
+                self.note.configure(text="预测利润为非负：可在「查看当前配置」中直接上线。")
+            else:
+                self.banner.configure(bg="#8a1c1c", fg="white", text=f"⚠️ 预测利润为负：{profit_val:.2f} 元（利润率 {profit_rate * 100:.2f}%）")
+                self.note.configure(text="预测利润为负：普通运营不可上线，仅可请超管在弹窗中强制上线。")
 
     def on_click(self, event):
         # 点击“移除”
@@ -2842,6 +2886,13 @@ class PageResult(ttk.Frame):
         if not bag.final_probs or not bag.selected_ids:
             messagebox.showwarning("禁止上线", "缺少最终概率或选品结果，请返回选品页计算后再上线。")
             return
+        profit_val = self.app._profit_value(bag.cfg, [it for it in self.app.catalog if it.id in bag.selected_ids], bag.final_probs)
+        if profit_val is None:
+            messagebox.showwarning("禁止上线", "缺少预测利润，无法上线。")
+            return
+        if profit_val < -1e-12:
+            messagebox.showwarning("禁止上线", "预测利润为负，仅超级管理员可强制上线。")
+            return
         # 上线：状态更新，回列表
         bag.status = "已上线"
         messagebox.showinfo("上线成功", " 上线成功！已返回福袋列表。")
@@ -2849,14 +2900,25 @@ class PageResult(ttk.Frame):
 
     def force_online(self):
         bag = self.app.ensure_current()
+        super_admin = bool(self.app.settings.get('is_super_admin', False))
+        if not super_admin:
+            messagebox.showwarning("权限不足", "仅超级管理员可在预测利润为负时强制上线。")
+            return
         if not bag.final_probs or not bag.selected_ids:
             messagebox.showwarning("需要先计算", "请先在选品页完成计算并生成最终概率。")
             return
+        profit_val = self.app._profit_value(bag.cfg, [it for it in self.app.catalog if it.id in bag.selected_ids], bag.final_probs)
+        if profit_val is None:
+            messagebox.showwarning("需要先计算", "缺少预测利润，无法强制上线。")
+            return
+        if profit_val >= -1e-12:
+            messagebox.showinfo("建议直接上线", "预测利润为非负，可直接上线，无需强制流程。")
+            return
 
         if self.app.settings.get('notify_supervisor_on_force', True) and self.app.settings.get('notify_enabled', True):
-            messagebox.showinfo("已通知上级", "预计利润率未达标，已发起强制上线申请并通知上级审批（占位交互）。")
+            messagebox.showinfo("已通知上级", "预测利润为负，已发起强制上线申请并通知上级审批（占位交互）。")
         else:
-            messagebox.showinfo("已记录", "预计利润率未达标，已记录强制上线申请（占位交互）。")
+            messagebox.showinfo("已记录", "预测利润为负，已记录强制上线申请（占位交互）。")
 
         bag.status = "待审批"
         self.app.show("PageBagList")
