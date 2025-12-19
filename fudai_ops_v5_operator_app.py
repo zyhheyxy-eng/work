@@ -1137,19 +1137,21 @@ class PageBagList(ttk.Frame):
         cb_rec.pack(side="left")
 
         ttk.Label(filt, text="统计时间：").pack(side="left", padx=(12, 4))
+        self._start_placeholder = "开始时间（YYYY-MM-DD HH:MM）"
+        self._end_placeholder = "结束时间（YYYY-MM-DD HH:MM）"
         self.v_start = tk.StringVar(value="")
         self.v_end = tk.StringVar(value="")
-        ent_start = ttk.Entry(filt, textvariable=self.v_start, width=12)
+        ent_start = ttk.Entry(filt, textvariable=self.v_start, width=18, justify="left")
         ent_start.pack(side="left")
-        self.app.apply_placeholder(ent_start, self.v_start, "开始日期")
-        ttk.Button(filt, text="选择", command=lambda: self._open_date_picker(self.v_start)).pack(side="left", padx=(2, 6))
+        self.app.apply_placeholder(ent_start, self.v_start, self._start_placeholder)
+        ttk.Button(filt, text="选择", command=lambda: open_datetime_picker(self, self.v_start)).pack(side="left", padx=(2, 6))
         ttk.Label(filt, text="~").pack(side="left")
-        ent_end = ttk.Entry(filt, textvariable=self.v_end, width=12)
+        ent_end = ttk.Entry(filt, textvariable=self.v_end, width=18, justify="left")
         ent_end.pack(side="left")
-        self.app.apply_placeholder(ent_end, self.v_end, "结束日期")
-        ttk.Button(filt, text="选择", command=lambda: self._open_date_picker(self.v_end)).pack(side="left", padx=(2, 6))
+        self.app.apply_placeholder(ent_end, self.v_end, self._end_placeholder)
+        ttk.Button(filt, text="选择", command=lambda: open_datetime_picker(self, self.v_end)).pack(side="left", padx=(2, 6))
 
-        ttk.Button(filt, text="搜索", command=self.refresh).pack(side="left", padx=(12, 0))
+        ttk.Button(filt, text="搜索", command=self._on_search).pack(side="left", padx=(12, 0))
 
         ttk.Label(self, text="统计时间用于计算成交额、订单数、成本、利润、利润率。未选择时使用默认区间。", foreground="#6b7280").pack(anchor="w", pady=(2, 6))
 
@@ -1213,6 +1215,29 @@ class PageBagList(ttk.Frame):
             if bag.recommended != want:
                 return False
         return True
+
+    def _validate_time_range(self) -> bool:
+        start_raw = _safe_kw(self.v_start.get(), self._start_placeholder)
+        end_raw = _safe_kw(self.v_end.get(), self._end_placeholder)
+        if not start_raw or not end_raw:
+            messagebox.showwarning("缺少统计时间", "请先选择统计开始和结束时间。")
+            return False
+        try:
+            start_dt = parse_dt(start_raw, "开始时间")
+            end_dt = parse_dt(end_raw, "结束时间")
+        except Exception as e:
+            messagebox.showerror("时间格式错误", str(e))
+            return False
+        if end_dt <= start_dt:
+            messagebox.showerror("时间范围错误", "结束时间必须晚于开始时间。")
+            return False
+        self._last_time_range = (start_dt, end_dt)
+        return True
+
+    def _on_search(self):
+        if not self._validate_time_range():
+            return
+        self.refresh()
 
     def refresh(self):
         self.app._auto_down_by_time()
@@ -1932,76 +1957,6 @@ class PageConfig(ttk.Frame):
 
     def _toggle_x(self):
         self.ent_X.configure(state=("normal" if (self.v_pity_on.get() and not self._readonly) else "disabled"))
-
-    def _open_date_picker(self, var: tk.StringVar):
-        top = tk.Toplevel(self)
-        top.title("选择日期")
-        top.geometry("300x320")
-        top.resizable(False, False)
-
-        try:
-            current = dt.datetime.strptime(var.get(), "%Y-%m-%d").date()
-        except Exception:
-            current = dt.date.today()
-
-        state = {"year": current.year, "month": current.month}
-
-        header = ttk.Frame(top)
-        header.pack(fill="x", pady=4)
-        lbl = ttk.Label(header, text="")
-        lbl.pack(side="left", padx=8)
-
-        def render():
-            lbl.configure(text=f"{state['year']}年{state['month']:02d}月")
-            for btn in btns:
-                btn.destroy()
-            btns.clear()
-            cal_mat = cal.monthcalendar(state["year"], state["month"])
-            for week in cal_mat:
-                row = ttk.Frame(grid)
-                row.pack(fill="x")
-                for d in week:
-                    txt = f"{d:02d}" if d else ""
-                    btn = ttk.Button(row, text=txt, width=4,
-                                     command=(lambda day=d: choose_day(day)) if d else None)
-                    btn.pack(side="left", expand=True, padx=1, pady=1)
-                    btns.append(btn)
-
-        def prev_month():
-            if state["month"] == 1:
-                state["month"] = 12
-                state["year"] -= 1
-            else:
-                state["month"] -= 1
-            render()
-
-        def next_month():
-            if state["month"] == 12:
-                state["month"] = 1
-                state["year"] += 1
-            else:
-                state["month"] += 1
-            render()
-
-        ttk.Button(header, text="<", command=prev_month).pack(side="left", padx=(8, 4))
-        ttk.Button(header, text=">", command=next_month).pack(side="left")
-
-        grid = ttk.Frame(top)
-        grid.pack(fill="both", expand=True, padx=6, pady=6)
-        header_row = ttk.Frame(grid)
-        header_row.pack(fill="x", pady=(0, 4))
-        for w in ["一", "二", "三", "四", "五", "六", "日"]:
-            ttk.Label(header_row, text=w, width=4, anchor="center").pack(side="left", expand=True)
-        btns: list[tk.Widget] = []
-
-        def choose_day(day: int):
-            if day <= 0:
-                return
-            val = dt.date(state["year"], state["month"], day).strftime("%Y-%m-%d")
-            var.set(val)
-            top.destroy()
-
-        render()
 
     def _upload_file(self, var: tk.StringVar):
         path = filedialog.askopenfilename(title="选择文件")
