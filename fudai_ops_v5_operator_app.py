@@ -1441,7 +1441,6 @@ class PageConfig(ttk.Frame):
             self.v_cover.set(bag.cover_path)
             self.v_bg.set(bag.bg_path)
             self.v_ad.set(bag.ad_path)
-            self.v_distribution.set(bag.distribution)
             self.v_remark.set(bag.remark)
         else:
             if not self.v_name.get():
@@ -1450,7 +1449,6 @@ class PageConfig(ttk.Frame):
             self.v_cover.set(bag.cover_path)
             self.v_bg.set(bag.bg_path)
             self.v_ad.set(bag.ad_path)
-            self.v_distribution.set(bag.distribution)
             self.v_remark.set(bag.remark)
 
         self._apply_readonly_state()
@@ -1527,12 +1525,6 @@ class PageConfig(ttk.Frame):
             ttk.Label(row, text=f"{label}：", width=10).pack(side="left")
             ttk.Entry(row, textvariable=var).pack(side="left", fill="x", expand=True)
             ttk.Button(row, text="上传", command=lambda v=var: self._upload_file(v)).pack(side="left", padx=6)
-
-        row_dist = ttk.Frame(media)
-        row_dist.pack(fill="x", pady=3)
-        ttk.Label(row_dist, text="分销选择：", width=10).pack(side="left")
-        cb_dist = ttk.Combobox(row_dist, textvariable=self.v_distribution, values=["不限", "内部分销", "外部分销"], state="readonly", width=12)
-        cb_dist.pack(side="left")
 
         row_notify = ttk.Frame(media)
         row_notify.pack(fill="x", pady=3)
