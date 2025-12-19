@@ -1886,7 +1886,10 @@ class PagePick(ttk.Frame):
             cmd = None
             if c in ("price", "cost", "disc"):
                 cmd = lambda col=c: self._toggle_sort("sel", col)
-            self.tree_selected.heading(c, text=t, command=cmd)
+            if cmd:
+                self.tree_selected.heading(c, text=t, command=cmd)
+            else:
+                self.tree_selected.heading(c, text=t)
             self.tree_selected.column(c, width=w, anchor=a)
         self.tree_selected.pack(fill="both", expand=True)
         self.tree_selected.bind("<Button-1>", self.on_click_selected)
@@ -1923,7 +1926,10 @@ class PagePick(ttk.Frame):
             cmd = None
             if c in ("price", "cost", "disc"):
                 cmd = lambda col=c: self._toggle_sort("cand", col)
-            self.tree.heading(c, text=t, command=cmd)
+            if cmd:
+                self.tree.heading(c, text=t, command=cmd)
+            else:
+                self.tree.heading(c, text=t)
             self.tree.column(c, width=w, anchor=a)
         self.tree.pack(fill="both", expand=True)
 
