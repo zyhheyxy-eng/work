@@ -1368,11 +1368,12 @@ class PageConfig(ttk.Frame):
         for lvl in LEVELS:
             ttk.Radiobutton(tabs, text=LEVEL_NAME[lvl], value=lvl, variable=self.preview_level, command=self.refresh_preview).pack(side="left", padx=(0, 8))
 
-        cols_prev = ("name", "stock", "steam_lowest", "cost", "discount", "prob", "src")
+        cols_prev = ("name", "stock", "price", "steam_lowest", "cost", "discount", "prob", "src")
         self.preview_tree = ttk.Treeview(preview_box, columns=cols_prev, show="headings", height=7)
         self.preview_headings = {
             "name": "游戏名",
             "stock": "库存",
+            "price": "售价",
             "steam_lowest": "Steam史低",
             "cost": "成本(元)",
             "discount": "折扣状态",
@@ -1380,10 +1381,11 @@ class PageConfig(ttk.Frame):
             "src": "来源",
         }
         for c, w, a, cmd in [
-            ("name", 280, "w", None),
+            ("name", 260, "w", None),
             ("stock", 80, "center", None),
+            ("price", 90, "e", lambda col="price": self._sort_preview(col)),
             ("steam_lowest", 90, "e", None),
-            ("cost", 90, "e", None),
+            ("cost", 90, "e", lambda col="cost": self._sort_preview(col)),
             ("discount", 110, "center", lambda col="discount": self._sort_preview(col)),
             ("prob", 120, "e", None),
             ("src", 90, "center", None),
@@ -1637,22 +1639,6 @@ class PageConfig(ttk.Frame):
         ent_g.pack(anchor="w")
         self._range_entries.append(ent_g)
 
-        time_sync = ttk.Frame(box)
-        time_sync.pack(fill="x", pady=(8, 4))
-        ttk.Label(time_sync, text="上架时间", width=12).pack(side="left")
-        ent_up_sync = ttk.Entry(time_sync, textvariable=self.v_up_date, width=18)
-        ent_up_sync.pack(side="left")
-        self._range_entries.append(ent_up_sync)
-        ttk.Button(time_sync, text="选择时间", command=lambda: self._open_datetime_picker(self.v_up_date)).pack(side="left", padx=4)
-
-        time_sync2 = ttk.Frame(box)
-        time_sync2.pack(fill="x", pady=2)
-        ttk.Label(time_sync2, text="下架时间", width=12).pack(side="left")
-        ent_down_sync = ttk.Entry(time_sync2, textvariable=self.v_down_date, width=18)
-        ent_down_sync.pack(side="left")
-        self._range_entries.append(ent_down_sync)
-        ttk.Button(time_sync2, text="选择时间", command=lambda: self._open_datetime_picker(self.v_down_date)).pack(side="left", padx=4)
-
         ttk.Label(box, text="等级与成本范围（数值区间）", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
 
         header = ttk.Frame(box)
@@ -1828,11 +1814,13 @@ class PageConfig(ttk.Frame):
                         return (0, it.discount_end)
                     return (1, dt.datetime.max)
                 rows.sort(key=disc_key, reverse=not asc)
+            elif sort_col in {"cost", "price"}:
+                rows.sort(key=lambda item: getattr(item[0], sort_col, 0.0), reverse=not asc)
 
             arrow = "↑" if asc else "↓"
             for col, base in self.preview_headings.items():
                 label = base + (f" {arrow}" if col == sort_col else "")
-                cmd = (lambda c=col: self._sort_preview(c)) if col == "discount" else None
+                cmd = (lambda c=col: self._sort_preview(c)) if col in {"discount", "cost", "price"} else None
                 if cmd:
                     self.preview_tree.heading(col, text=label, command=cmd)
                 else:
@@ -1843,6 +1831,7 @@ class PageConfig(ttk.Frame):
                 self.preview_tree.insert("", "end", values=(
                     it.name,
                     it.stock,
+                    f"{it.price:.2f}",
                     f"{it.steam_lowest:.2f}",
                     f"{it.cost:.2f}",
                     disc,
