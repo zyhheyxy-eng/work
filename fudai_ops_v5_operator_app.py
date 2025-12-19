@@ -59,6 +59,7 @@ class Config:
     X: Optional[int]          # 保底阈值
     p_k: Dict[str, float]     # 等级概率（0~1）
     cost_ranges: Dict[str, LevelRange]  # 数值型成本范围（元）
+    notify_person: str = "当前操作人"
 
 @dataclass
 class Item:
@@ -407,6 +408,7 @@ class App(tk.Tk):
         lines.append(f"当前预计利润率：{(pr * 100):.2f}%" if pr is not None else "当前预计利润率：—（需计算）")
         lines.append(f"售价筛选比例：商品售价 ≥ 单抽价×{cfg.price_ratio * 100:.0f}%")
         lines.append(f"保底规则：{'累计 ' + str(cfg.X) + ' 抽必出【传说】' if cfg.pity_on and cfg.X else '未开启'}")
+        lines.append(f"通知人：{getattr(cfg, 'notify_person', '当前操作人')}")
         lines.append("\n等级概率与成本区间：")
         for lvl in LEVELS:
             r = cfg.cost_ranges[lvl]
@@ -792,6 +794,7 @@ class ConfigPopup(tk.Toplevel):
             ("等效单抽收入 P_eff", f"{P_eff:.2f} 元"),
             ("当前预计利润率", f"{pr*100:.2f}%" if pr is not None else "—（需计算）"),
             ("保底规则", f"累计 {cfg.X} 抽必出【传说】" if cfg.pity_on and cfg.X else "未开启"),
+            ("通知人", getattr(cfg, "notify_person", "当前操作人")),
         ]
         for i, (k, v) in enumerate(info):
             ttk.Label(base, text=f"{k}：", width=18).grid(row=i, column=0, sticky="w", pady=2)
@@ -1323,6 +1326,8 @@ class PageConfig(ttk.Frame):
         self.v_ad = tk.StringVar(value="")
         self.v_distribution = tk.StringVar(value="")
         self.v_remark = tk.StringVar(value="")
+        self.v_notify_person = tk.StringVar(value="当前操作人")
+        self.v_my_cost = tk.StringVar(value="—")
 
         now = dt.datetime.now()
         self.v_up_date = tk.StringVar(value=f"{(now + dt.timedelta(days=1)):%Y-%m-%d}")
@@ -1396,6 +1401,7 @@ class PageConfig(ttk.Frame):
             self.v_up_date.set(cfg.up_time.strftime("%Y-%m-%d"))
             self.v_down_date.set(cfg.down_time.strftime("%Y-%m-%d"))
             self.v_pity_on.set(bool(cfg.pity_on))
+            self.v_notify_person.set(getattr(cfg, "notify_person", "当前操作人") or "当前操作人")
             self.v_X.set(str(cfg.X or ""))
             for k in LEVELS:
                 self.v_p[k].set(str(int(round(cfg.p_k[k] * 100))))
@@ -1492,6 +1498,13 @@ class PageConfig(ttk.Frame):
         ttk.Label(row_dist, text="分销选择：", width=10).pack(side="left")
         cb_dist = ttk.Combobox(row_dist, textvariable=self.v_distribution, values=["不限", "内部分销", "外部分销"], state="readonly", width=12)
         cb_dist.pack(side="left")
+
+        row_notify = ttk.Frame(media)
+        row_notify.pack(fill="x", pady=3)
+        ttk.Label(row_notify, text="通知人：", width=10).pack(side="left")
+        cb_notify = ttk.Combobox(row_notify, textvariable=self.v_notify_person,
+                                 values=["当前操作人", "运营A", "运营B", "运营C"], state="readonly", width=14)
+        cb_notify.pack(side="left")
 
         row_remark = ttk.Frame(media)
         row_remark.pack(fill="x", pady=3)
@@ -1632,6 +1645,9 @@ class PageConfig(ttk.Frame):
         self.ent_X.pack(side="left")
         self._range_entries.append(self.ent_X)
 
+        ttk.Label(box, text="我的预期成本", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
+        ttk.Label(box, textvariable=self.v_my_cost, foreground="#111827").pack(anchor="w")
+
         # 人工上下线控制已迁移到首页管理操作
 
     def _parse_float(self, s: str, name: str, lo=None, hi=None) -> float:
@@ -1683,7 +1699,9 @@ class PageConfig(ttk.Frame):
         if pity_on:
             X = self._parse_int(self.v_X.get(), "保底阈值 X", lo=1, hi=1_000_000)
 
-        return Config(bag_name, P, g, d, q, ratio, up_time, down_time, pity_on, X, p_k, ranges)
+        notify_person = self.v_notify_person.get().strip() or "当前操作人"
+
+        return Config(bag_name, P, g, d, q, ratio, up_time, down_time, pity_on, X, p_k, ranges, notify_person)
 
     def refresh_expected_cost(self):
         try:
@@ -1693,7 +1711,11 @@ class PageConfig(ttk.Frame):
                 lo = int(self.v_lo[k].get() or 0)
                 hi = int(self.v_hi[k].get() or 0)
                 self.v_exp[k].set(f"{mu[k]:.0f}" if (lo <= mu[k] <= hi) else f"⚠ {mu[k]:.0f}")
+            P_eff = calc_p_eff(cfg.P, cfg.d, cfg.q)
+            c_target = calc_c_target(P_eff, cfg.g)
+            self.v_my_cost.set(f"{c_target:.2f} 元（目标成本线）")
         except Exception:
+            self.v_my_cost.set("—")
             return
 
     def refresh_preview(self):
