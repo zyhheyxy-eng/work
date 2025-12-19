@@ -1025,7 +1025,7 @@ class PageBagList(ttk.Frame):
             ("prate", "利润率", 90, "center"),
             ("status", "状态", 80, "center"),
             ("count", "商品个数", 90, "center"),
-            ("ops", "管理操作", 160, "center"),
+            ("ops", "管理操作", 200, "center"),
         ]:
             self.tree.heading(c, text=t)
             self.tree.column(c, width=w, anchor=a)
@@ -1089,7 +1089,7 @@ class PageBagList(ttk.Frame):
 
             status = "开启" if bag.status == "已上线" else "关闭"
             count = len(bag.selected_ids) if bag.selected_ids else 0
-            ops_txt = "修改｜" + ("取消推荐" if bag.recommended else "推荐") + "｜详情"
+            ops_txt = "修改｜" + ("取消推荐" if bag.recommended else "推荐") + "｜详情｜删除"
 
             self.tree.insert("", "end", iid=bag_id, values=(
                 bag_id,
@@ -1125,12 +1125,14 @@ class PageBagList(ttk.Frame):
         x_rel = event.x - bbox[0]
         width = max(bbox[2], 1)
         section = x_rel / width
-        if section < 1/3:
+        if section < 0.25:
             self._edit_bag(row)
-        elif section < 2/3:
+        elif section < 0.50:
             self._toggle_recommend(row)
-        else:
+        elif section < 0.75:
             self._show_detail(row)
+        else:
+            self._delete_bag(row)
 
     def _edit_bag(self, bag_id: str):
         self.app.current_bag_id = bag_id
@@ -1175,6 +1177,17 @@ class PageBagList(ttk.Frame):
         lbl.insert("1.0", "\n".join(lines))
         lbl.configure(state="disabled")
         ttk.Button(win, text="关闭", command=win.destroy).pack(pady=(0, 10))
+
+    def _delete_bag(self, bag_id: str):
+        bag = self.app.bags.get(bag_id)
+        if not bag:
+            return
+        if not messagebox.askyesno("确认删除", f"确认删除 {bag_id} 吗？删除后不可恢复。"):
+            return
+        if self.app.current_bag_id == bag_id:
+            self.app.current_bag_id = None
+        del self.app.bags[bag_id]
+        self.refresh()
 
 # -------------------------------
 # Page 2：参数配置页（支持只读模式）
