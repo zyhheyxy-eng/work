@@ -37,6 +37,7 @@ DEFAULT_ALARM = 50
 
 # 内部“等级价值系数”（用于生成预期成本参考，不展示给运营）
 _ALPHA = {"L": 3.0, "E": 2.0, "R": 1.5, "U": 1.2, "C": 1.0}
+PRESET_NOTIFY_PERSONS = ["当前操作人", "运营A", "运营B", "超管"]
 
 # -------------------------------
 # 数据结构
@@ -828,7 +829,11 @@ class ReminderSettingsDialog(tk.Toplevel):
 
         self.v_remind = tk.BooleanVar(value=bool(app.settings.get('reminder_enabled', True)))
         self.v_notify = tk.BooleanVar(value=bool(app.settings.get('notify_enabled', True)))
-        self.v_person = tk.StringVar(value=str(app.settings.get('reminder_person', "")))
+        saved_persons = app.settings.get('reminder_persons')
+        if isinstance(saved_persons, str):
+            saved_persons = [p.strip() for p in saved_persons.split(',') if p.strip()]
+        self._person_options = PRESET_NOTIFY_PERSONS
+        self.reminder_persons = saved_persons if isinstance(saved_persons, list) and saved_persons else []
         self.v_phone = tk.StringVar(value=str(app.settings.get('reminder_phone', "")))
         self.v_time = tk.StringVar(value=str(app.settings.get('reminder_time', "16:00")))
         self.v_start_day = tk.StringVar(value=str(app.settings.get('reminder_start_day', '今天')))
@@ -848,7 +853,10 @@ class ReminderSettingsDialog(tk.Toplevel):
         frm = ttk.Frame(box)
         frm.pack(fill="x", pady=(12, 2))
         ttk.Label(frm, text="提醒人：", width=12).pack(side="left")
-        ttk.Entry(frm, textvariable=self.v_person, width=20).pack(side="left")
+        lst = tk.Listbox(frm, listvariable=tk.StringVar(value=self._person_options), selectmode="multiple", height=4, exportselection=False)
+        lst.pack(side="left", padx=(0, 8))
+        self.lst_persons = lst
+        self._apply_person_selection()
         ttk.Label(frm, text="手机号：", width=8).pack(side="left")
         ttk.Entry(frm, textvariable=self.v_phone, width=16).pack(side="left")
 
@@ -881,6 +889,16 @@ class ReminderSettingsDialog(tk.Toplevel):
 
         row("开始时间", self.v_start_day, self.v_start_time)
         row("结束时间", self.v_end_day, self.v_end_time)
+
+    def _apply_person_selection(self):
+        if not hasattr(self, "lst_persons"):
+            return
+        opts = list(self._person_options)
+        selected = self.reminder_persons or [PRESET_NOTIFY_PERSONS[0]]
+        self.lst_persons.selection_clear(0, tk.END)
+        for idx, name in enumerate(opts):
+            if name in selected:
+                self.lst_persons.selection_set(idx)
 
     def _parse_day_time(self, day_flag: str, hhmm: str) -> dt.datetime:
         today = dt.datetime.now().date()
@@ -916,7 +934,10 @@ class ReminderSettingsDialog(tk.Toplevel):
 
         self.app.settings['reminder_enabled'] = bool(self.v_remind.get())
         self.app.settings['notify_enabled'] = bool(self.v_notify.get())
-        self.app.settings['reminder_person'] = self.v_person.get().strip() or "默认运营"
+        selected = [self._person_options[i] for i in self.lst_persons.curselection()] or [PRESET_NOTIFY_PERSONS[0]]
+        self.app.settings['reminder_persons'] = selected
+        # 向后兼容旧字段
+        self.app.settings['reminder_person'] = ",".join(selected)
         self.app.settings['reminder_phone'] = self.v_phone.get().strip()
         self.app.settings['reminder_time'] = self.v_time.get().strip() or "16:00"
         self.app.settings['reminder_start_day'] = self.v_start_day.get()
@@ -1472,7 +1493,7 @@ class PageMonthlyBag(ttk.Frame):
         self.v_cover = tk.StringVar(value="")
         self.v_bg = tk.StringVar(value="")
         self.v_ad = tk.StringVar(value="")
-        self.v_notify = tk.StringVar(value="当前操作人")
+        self.v_notify = tk.StringVar(value=PRESET_NOTIFY_PERSONS[0])
         self.v_remark = tk.StringVar(value="")
 
         left = ttk.Frame(container)
@@ -1562,7 +1583,9 @@ class PageMonthlyBag(ttk.Frame):
         row_notify = ttk.Frame(media_box)
         row_notify.pack(fill="x", pady=3)
         ttk.Label(row_notify, text="通知人：", width=10).pack(side="left")
-        ttk.Entry(row_notify, textvariable=self.v_notify, width=22).pack(side="left")
+        cb_notify = ttk.Combobox(row_notify, textvariable=self.v_notify,
+                                 values=PRESET_NOTIFY_PERSONS, state="readonly", width=20)
+        cb_notify.pack(side="left")
 
         row_remark = ttk.Frame(media_box)
         row_remark.pack(fill="x", pady=3)
@@ -1591,7 +1614,10 @@ class PageMonthlyBag(ttk.Frame):
         self.v_cover.set(state.cover_path or "")
         self.v_bg.set(state.bg_path or "")
         self.v_ad.set(state.ad_path or "")
-        self.v_notify.set(state.notify_person or "当前操作人")
+        default_notify = state.notify_person or PRESET_NOTIFY_PERSONS[0]
+        if default_notify not in PRESET_NOTIFY_PERSONS:
+            default_notify = PRESET_NOTIFY_PERSONS[0]
+        self.v_notify.set(default_notify)
         self.v_remark.set(state.remark or "")
         self.lbl_status.configure(text=f"当前状态：{state.status}")
 
@@ -1619,7 +1645,10 @@ class PageMonthlyBag(ttk.Frame):
         state.cover_path = self.v_cover.get().strip()
         state.bg_path = self.v_bg.get().strip()
         state.ad_path = self.v_ad.get().strip()
-        state.notify_person = self.v_notify.get().strip() or "当前操作人"
+        val_notify = self.v_notify.get().strip() or PRESET_NOTIFY_PERSONS[0]
+        if val_notify not in PRESET_NOTIFY_PERSONS:
+            val_notify = PRESET_NOTIFY_PERSONS[0]
+        state.notify_person = val_notify
         state.remark = self.v_remark.get().strip()
         return state
 
