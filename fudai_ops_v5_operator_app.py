@@ -18,7 +18,7 @@ from __future__ import annotations
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 import datetime as dt
 import calendar as cal
 import random
@@ -423,6 +423,7 @@ class App(tk.Tk):
             'reminder_time': '16:00',
             'reminder_person': '默认运营',
             'reminder_phone': '13800000000',
+            'reminder_list': [],
             'notify_enabled': True,
             'notify_supervisor_on_force': True,
             'is_super_admin': False,
@@ -814,91 +815,105 @@ class ReminderDialog(tk.Toplevel):
 # -------------------------------
 
 class ReminderSettingsDialog(tk.Toplevel):
-    """提醒/通知设置（交互占位：不一定真实发送通知）"""
+    """提醒配置列表（展示型，可新增多条提醒）。"""
     def __init__(self, parent: tk.Tk, app: 'App'):
         super().__init__(parent)
         self.app = app
-        self.title("提醒与通知设置")
-        self.geometry("620x520")
+        self.title("提醒设置")
+        self.geometry("760x560")
         self.resizable(False, False)
 
-        ttk.Label(self, text="提醒设置（展示型功能，不触发真实通知）", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", padx=14, pady=(12, 8))
+        self.reminders: List[Dict[str, Any]] = []
+        raw = app.settings.get('reminder_list') or []
+        if isinstance(raw, list):
+            self.reminders = [dict(x) for x in raw if isinstance(x, dict)]
 
-        box = ttk.Frame(self, padding=14)
-        box.pack(fill="both", expand=True)
+        ttk.Label(self, text="提醒设置（展示型配置，不触发真实通知）", font=("Microsoft YaHei UI", 12, "bold")).pack(anchor="w", padx=14, pady=(12, 8))
 
-        self.v_remind = tk.BooleanVar(value=bool(app.settings.get('reminder_enabled', True)))
-        self.v_notify = tk.BooleanVar(value=bool(app.settings.get('notify_enabled', True)))
-        saved_persons = app.settings.get('reminder_persons')
-        if isinstance(saved_persons, str):
-            saved_persons = [p.strip() for p in saved_persons.split(',') if p.strip()]
-        self._person_options = PRESET_NOTIFY_PERSONS
-        self.reminder_persons = saved_persons if isinstance(saved_persons, list) and saved_persons else []
-        self.v_phone = tk.StringVar(value=str(app.settings.get('reminder_phone', "")))
-        self.v_time = tk.StringVar(value=str(app.settings.get('reminder_time', "16:00")))
-        self.v_start_day = tk.StringVar(value=str(app.settings.get('reminder_start_day', '今天')))
-        self.v_end_day = tk.StringVar(value=str(app.settings.get('reminder_end_day', '明天')))
-        self.v_start_time = tk.StringVar(value=str(app.settings.get('reminder_start_time', '00:00')))
-        self.v_end_time = tk.StringVar(value=str(app.settings.get('reminder_end_time', '23:59')))
+        top_bar = ttk.Frame(self, padding=(14, 0))
+        top_bar.pack(fill="x")
+        ttk.Button(top_bar, text="新增提醒", command=self.add_reminder).pack(side="left")
 
-        ttk.Checkbutton(box, text="开启每日提醒弹窗（默认 16:00）", variable=self.v_remind).pack(anchor="w", pady=4)
-        ttk.Checkbutton(box, text="开启通知（占位：可对接企业微信/邮件）", variable=self.v_notify).pack(anchor="w", pady=4)
-
-        ttk.Label(box, text="统计时间范围（昨天/今天/明天 + 时间），仅用于展示：", foreground="#374151").pack(anchor="w", pady=(10, 4))
-        self._build_range_picker(box)
-
-        ttk.Label(box, text="统计对象说明：用于统计该时间范围内【折扣即将到期】或【库存为 0】的商品。", foreground="#6b7280", wraplength=560, justify="left").pack(anchor="w", pady=(8, 4))
-        ttk.Label(box, text="结束时间需晚于开始时间；不合法时将提示“统计时间范围不合法”。", foreground="#6b7280").pack(anchor="w")
-
-        frm = ttk.Frame(box)
-        frm.pack(fill="x", pady=(12, 2))
-        ttk.Label(frm, text="提醒人：", width=12).pack(side="left")
-        lst = tk.Listbox(frm, listvariable=tk.StringVar(value=self._person_options), selectmode="multiple", height=4, exportselection=False)
-        lst.pack(side="left", padx=(0, 8))
-        self.lst_persons = lst
-        self._apply_person_selection()
-        ttk.Label(frm, text="手机号：", width=8).pack(side="left")
-        ttk.Entry(frm, textvariable=self.v_phone, width=16).pack(side="left")
-
-        frm2 = ttk.Frame(box)
-        frm2.pack(fill="x", pady=(2, 8))
-        ttk.Label(frm2, text="提醒时间：", width=12).pack(side="left")
-        ttk.Entry(frm2, textvariable=self.v_time, width=10).pack(side="left")
-        ttk.Label(frm2, text="(HH:MM，例如 16:00)", foreground="#6b7280").pack(side="left", padx=(6, 0))
-        ttk.Label(box, text="系统将在设定时间点生成提醒（当前仅用于配置展示）", foreground="#6b7280").pack(anchor="w", pady=(2, 8))
-
-        ttk.Label(box, text="提醒设置当前仅用于功能展示，不会触发真实通知；不影响统计数据、上线/下线或选品逻辑。", foreground="#6b7280", wraplength=560, justify="left").pack(anchor="w", pady=(10, 0))
+        columns = ("person", "range", "time", "phone", "status")
+        self.tree = ttk.Treeview(self, columns=columns, show="headings", height=12)
+        self.tree.heading("person", text="提醒人")
+        self.tree.heading("range", text="统计时间范围")
+        self.tree.heading("time", text="提醒时间")
+        self.tree.heading("phone", text="手机号")
+        self.tree.heading("status", text="状态")
+        self.tree.column("person", width=110, anchor="center")
+        self.tree.column("range", width=260, anchor="w")
+        self.tree.column("time", width=90, anchor="center")
+        self.tree.column("phone", width=120, anchor="center")
+        self.tree.column("status", width=70, anchor="center")
+        self.tree.pack(fill="both", expand=True, padx=14, pady=(8, 6))
 
         btns = ttk.Frame(self, padding=12)
         btns.pack(fill="x")
-        ttk.Button(btns, text="保存", command=self.save).pack(side="left")
-        ttk.Button(btns, text="关闭", command=self.destroy).pack(side="left", padx=8)
+        ttk.Button(btns, text="编辑", command=self.edit_selected).pack(side="left")
+        ttk.Button(btns, text="删除", command=self.delete_selected).pack(side="left", padx=6)
+        ttk.Button(btns, text="关闭", command=self.destroy).pack(side="right")
 
-    def _build_range_picker(self, parent: ttk.Frame):
-        days = ["昨天", "今天", "明天"]
+        ttk.Label(self, text="用于统计该时间范围内【折扣即将到期】或【库存为 0】的商品。", foreground="#6b7280").pack(anchor="w", padx=14, pady=(6, 0))
+        ttk.Label(self, text="当前仅用于功能展示与配置留存，不会触发真实通知；后续可对接短信/IM/系统通知渠道。", foreground="#6b7280", wraplength=700, justify="left").pack(anchor="w", padx=14, pady=(2, 4))
 
-        def row(title: str, v_day: tk.StringVar, v_time: tk.StringVar):
-            r = ttk.Frame(parent)
-            r.pack(fill="x", pady=2)
-            ttk.Label(r, text=title, width=10).pack(side="left")
-            for d in days:
-                ttk.Radiobutton(r, text=d, value=d, variable=v_day).pack(side="left", padx=(0, 6))
-            ttk.Label(r, text="时间：").pack(side="left", padx=(10, 4))
-            ttk.Entry(r, textvariable=v_time, width=8).pack(side="left")
-            ttk.Label(r, text="(HH:MM)", foreground="#6b7280").pack(side="left")
+        self.refresh()
 
-        row("开始时间", self.v_start_day, self.v_start_time)
-        row("结束时间", self.v_end_day, self.v_end_time)
+    def _render_range(self, r: Dict[str, Any]) -> str:
+        try:
+            start = self._parse_day_time(r.get('start_day', '今天'), r.get('start_time', '00:00'))
+            end = self._parse_day_time(r.get('end_day', '明天'), r.get('end_time', '23:59'))
+            return f"{start:%Y-%m-%d %H:%M} ~ {end:%Y-%m-%d %H:%M}"
+        except Exception:
+            return "—"
 
-    def _apply_person_selection(self):
-        if not hasattr(self, "lst_persons"):
+    def refresh(self):
+        self.tree.delete(*self.tree.get_children())
+        for rec in self.reminders:
+            status = "开启" if rec.get('enabled', True) else "关闭"
+            rng = self._render_range(rec)
+            self.tree.insert("", "end", iid=str(rec.get('reminder_id')), values=(rec.get('reminder_person', ""), rng, rec.get('remind_time', ""), rec.get('phone', ""), status))
+
+    def _next_id(self) -> int:
+        existing = [int(r.get('reminder_id') or 0) for r in self.reminders if str(r.get('reminder_id')).isdigit()]
+        return (max(existing) + 1) if existing else 1
+
+    def add_reminder(self):
+        dlg = ReminderEditDialog(self, None)
+        self.wait_window(dlg)
+        if dlg.result:
+            rec = dlg.result
+            rec['reminder_id'] = self._next_id()
+            self.reminders.append(rec)
+            self._save_and_refresh()
+
+    def edit_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("提示", "请先选择一条提醒配置。")
             return
-        opts = list(self._person_options)
-        selected = self.reminder_persons or [PRESET_NOTIFY_PERSONS[0]]
-        self.lst_persons.selection_clear(0, tk.END)
-        for idx, name in enumerate(opts):
-            if name in selected:
-                self.lst_persons.selection_set(idx)
+        rid = sel[0]
+        rec = next((r for r in self.reminders if str(r.get('reminder_id')) == rid), None)
+        dlg = ReminderEditDialog(self, rec)
+        self.wait_window(dlg)
+        if dlg.result:
+            rec.update(dlg.result)
+            self._save_and_refresh()
+
+    def delete_selected(self):
+        sel = self.tree.selection()
+        if not sel:
+            messagebox.showinfo("提示", "请先选择一条提醒配置。")
+            return
+        rid = sel[0]
+        if not messagebox.askyesno("确认删除", "确认删除该提醒吗？"):
+            return
+        self.reminders = [r for r in self.reminders if str(r.get('reminder_id')) != rid]
+        self._save_and_refresh()
+
+    def _save_and_refresh(self):
+        self.app.settings['reminder_list'] = list(self.reminders)
+        self.refresh()
 
     def _parse_day_time(self, day_flag: str, hhmm: str) -> dt.datetime:
         today = dt.datetime.now().date()
@@ -908,7 +923,7 @@ class ReminderSettingsDialog(tk.Toplevel):
         elif day_flag == "明天":
             base = today + dt.timedelta(days=1)
 
-        hhmm = hhmm.strip()
+        hhmm = (hhmm or "").strip()
         if not hhmm:
             raise ValueError("时间不能为空，格式 HH:MM")
         try:
@@ -922,7 +937,93 @@ class ReminderSettingsDialog(tk.Toplevel):
 
         return dt.datetime.combine(base, dt.time(hour, minute))
 
-    def save(self):
+
+class ReminderEditDialog(tk.Toplevel):
+    def __init__(self, parent: tk.Misc, data: Optional[Dict[str, Any]]):
+        super().__init__(parent)
+        self.title("提醒配置")
+        self.geometry("480x380")
+        self.resizable(False, False)
+        self.result: Optional[Dict[str, Any]] = None
+
+        days = ["昨天", "今天", "明天"]
+
+        self.v_person = tk.StringVar(value=(data.get('reminder_person') if data else PRESET_NOTIFY_PERSONS[0]))
+        if self.v_person.get() not in PRESET_NOTIFY_PERSONS:
+            self.v_person.set(PRESET_NOTIFY_PERSONS[0])
+        self.v_start_day = tk.StringVar(value=(data.get('start_day') if data else "昨天"))
+        self.v_end_day = tk.StringVar(value=(data.get('end_day') if data else "今天"))
+        self.v_start_time = tk.StringVar(value=(data.get('start_time') if data else "18:00"))
+        self.v_end_time = tk.StringVar(value=(data.get('end_time') if data else "10:00"))
+        self.v_remind_time = tk.StringVar(value=(data.get('remind_time') if data else "16:00"))
+        self.v_phone = tk.StringVar(value=(data.get('phone') if data else ""))
+        self.v_enabled = tk.BooleanVar(value=(data.get('enabled', True) if data else True))
+
+        form = ttk.Frame(self, padding=12)
+        form.pack(fill="both", expand=True)
+
+        def row(label: str):
+            r = ttk.Frame(form)
+            r.pack(fill="x", pady=4)
+            ttk.Label(r, text=label, width=12).pack(side="left")
+            return r
+
+        r1 = row("提醒人")
+        ttk.Combobox(r1, textvariable=self.v_person, values=PRESET_NOTIFY_PERSONS, state="readonly", width=22).pack(side="left")
+
+        def day_time_row(title: str, v_day: tk.StringVar, v_time: tk.StringVar):
+            r = row(title)
+            ttk.Combobox(r, textvariable=v_day, values=days, state="readonly", width=8).pack(side="left")
+            ttk.Label(r, text="时间：").pack(side="left", padx=(8, 4))
+            ttk.Entry(r, textvariable=v_time, width=10).pack(side="left")
+            ttk.Label(r, text="(HH:MM)", foreground="#6b7280").pack(side="left", padx=(4, 0))
+
+        day_time_row("统计开始", self.v_start_day, self.v_start_time)
+        day_time_row("统计结束", self.v_end_day, self.v_end_time)
+
+        r3 = row("提醒时间")
+        ttk.Entry(r3, textvariable=self.v_remind_time, width=10).pack(side="left")
+        ttk.Label(r3, text="(HH:MM)", foreground="#6b7280").pack(side="left", padx=(4, 0))
+
+        r4 = row("手机号")
+        ttk.Entry(r4, textvariable=self.v_phone, width=18).pack(side="left")
+
+        r5 = row("状态")
+        ttk.Checkbutton(r5, text="开启", variable=self.v_enabled).pack(side="left")
+
+        ttk.Label(form, text="用于统计该时间范围内【折扣即将到期】或【库存为 0】的商品。", foreground="#6b7280", wraplength=440, justify="left").pack(anchor="w", pady=(10, 0))
+
+        btns = ttk.Frame(self, padding=12)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="保存", command=self._save).pack(side="left")
+        ttk.Button(btns, text="取消", command=self.destroy).pack(side="left", padx=8)
+
+    def _parse_day_time(self, day_flag: str, hhmm: str) -> dt.datetime:
+        today = dt.datetime.now().date()
+        base = today
+        if day_flag == "昨天":
+            base = today - dt.timedelta(days=1)
+        elif day_flag == "明天":
+            base = today + dt.timedelta(days=1)
+
+        hhmm = (hhmm or "").strip()
+        if not hhmm:
+            raise ValueError("时间不能为空，格式 HH:MM")
+        try:
+            h, m = hhmm.split(":")
+            hour = int(h)
+            minute = int(m)
+            if not (0 <= hour <= 23 and 0 <= minute <= 59):
+                raise ValueError
+        except Exception:
+            raise ValueError("时间格式错误，应为 HH:MM")
+        return dt.datetime.combine(base, dt.time(hour, minute))
+
+    def _check_phone(self, s: str) -> bool:
+        s = s.strip()
+        return s.isdigit() and 6 <= len(s) <= 20
+
+    def _save(self):
         try:
             start = self._parse_day_time(self.v_start_day.get(), self.v_start_time.get())
             end = self._parse_day_time(self.v_end_day.get(), self.v_end_time.get())
@@ -932,20 +1033,20 @@ class ReminderSettingsDialog(tk.Toplevel):
             messagebox.showerror("统计时间范围不合法", str(e))
             return
 
-        self.app.settings['reminder_enabled'] = bool(self.v_remind.get())
-        self.app.settings['notify_enabled'] = bool(self.v_notify.get())
-        selected = [self._person_options[i] for i in self.lst_persons.curselection()] or [PRESET_NOTIFY_PERSONS[0]]
-        self.app.settings['reminder_persons'] = selected
-        # 向后兼容旧字段
-        self.app.settings['reminder_person'] = ",".join(selected)
-        self.app.settings['reminder_phone'] = self.v_phone.get().strip()
-        self.app.settings['reminder_time'] = self.v_time.get().strip() or "16:00"
-        self.app.settings['reminder_start_day'] = self.v_start_day.get()
-        self.app.settings['reminder_end_day'] = self.v_end_day.get()
-        self.app.settings['reminder_start_time'] = self.v_start_time.get().strip()
-        self.app.settings['reminder_end_time'] = self.v_end_time.get().strip()
-        self.app.settings['reminder_range'] = f"{start:%Y-%m-%d %H:%M} ~ {end:%Y-%m-%d %H:%M}"
-        messagebox.showinfo("已保存", "提醒设置已保存（当前仅用于配置展示，不会触发真实通知）。")
+        if not self._check_phone(self.v_phone.get()):
+            messagebox.showerror("输入错误", "手机号格式不正确，请输入数字且长度 6~20。")
+            return
+
+        self.result = {
+            'reminder_person': self.v_person.get().strip() or PRESET_NOTIFY_PERSONS[0],
+            'start_day': self.v_start_day.get(),
+            'end_day': self.v_end_day.get(),
+            'start_time': self.v_start_time.get().strip(),
+            'end_time': self.v_end_time.get().strip(),
+            'remind_time': self.v_remind_time.get().strip(),
+            'phone': self.v_phone.get().strip(),
+            'enabled': bool(self.v_enabled.get()),
+        }
         self.destroy()
 
 class ConfigPopup(tk.Toplevel):
