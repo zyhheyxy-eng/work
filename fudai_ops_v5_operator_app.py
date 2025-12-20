@@ -2428,6 +2428,12 @@ class PagePick(ttk.Frame):
         except Exception:
             return True
 
+    def _is_expired_for_candidate(self, it: Item, now: dt.datetime) -> bool:
+        """系统筛选商品折扣到期后不在候选区展示，手动添加保留。"""
+        if it.discount_end and it.discount_end <= now and it.id not in getattr(self.app.ensure_current(), "manual_added_ids", set()):
+            return True
+        return False
+
     def _toggle_sort(self, which: str, key: str):
         if which == "sel":
             if self.sel_sort_key == key:
@@ -2528,11 +2534,22 @@ class PagePick(ttk.Frame):
 
         self.sel_info.configure(text=f"共 {sel_total} 条，{sel_pages} 页，当前第 {self.sel_page} 页")
 
-        # 候选列表（系统筛选 + 手动添加）
-        shown = [it for it in bag.filtered if it.id not in bag.selected_ids and self._matches(it)]
+        # 候选列表（系统筛选 + 手动添加），系统筛选的过期商品不再展示，避免“全选后立即被剔除”
+        shown = []
+        for it in bag.filtered:
+            if it.id in bag.selected_ids:
+                continue
+            if self._is_expired_for_candidate(it, now):
+                continue
+            if self._matches(it):
+                shown.append(it)
+
         manual_items = [it for it in self.app.catalog if it.id in bag.manual_added_ids]
         for it in manual_items:
             if it.id in bag.selected_ids:
+                continue
+            if it.discount_end and it.discount_end <= now:
+                # 手动添加允许保留，但不自动加入候选区；若需要重新勾选，可先延长折扣时间
                 continue
             if self._matches(it) and it not in shown:
                 shown.append(it)
@@ -2651,7 +2668,24 @@ class PagePick(ttk.Frame):
 
     def select_all(self):
         bag = self.app.ensure_current()
-        bag.selected_ids |= ({it.id for it in bag.filtered} | set(bag.manual_added_ids))
+        now = dt.datetime.now()
+        # 仅勾选当前候选视图中可见且未过期的系统商品 + 未过期的手动添加商品
+        candidates: List[Item] = []
+        for it in bag.filtered:
+            if it.id in bag.selected_ids:
+                continue
+            if self._is_expired_for_candidate(it, now):
+                continue
+            if self._matches(it):
+                candidates.append(it)
+        for it in self.app.catalog:
+            if it.id in bag.manual_added_ids and it.id not in bag.selected_ids:
+                if it.discount_end and it.discount_end <= now:
+                    continue
+                if self._matches(it):
+                    candidates.append(it)
+
+        bag.selected_ids |= {it.id for it in candidates}
         bag.config_confirmed = False
         self.refresh()
 
