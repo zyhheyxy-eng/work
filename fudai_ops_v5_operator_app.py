@@ -989,7 +989,7 @@ class ConfigPopup(tk.Toplevel):
         self.note.pack(side="left")
         self.btn_online = ttk.Button(btns, text="确认上线", command=self._online)
         self.btn_online.pack(side="right")
-        self.btn_force = ttk.Button(btns, text="强制上线（通知上级）", command=self._force_online)
+        self.btn_force = ttk.Button(btns, text="强制上线", command=self._force_online)
         self.btn_force.pack(side="right", padx=8)
 
         self._refresh_level_view()
@@ -2282,7 +2282,7 @@ class PagePick(ttk.Frame):
 
         self.breadcrumb = ttk.Label(self, text="", foreground="#9ca3af")
         self.breadcrumb.pack(anchor="w")
-        ttk.Button(self, text="返回列表", command=self.back_list).place(relx=1.0, y=5, x=-10, anchor="ne")
+        ttk.Button(self, text="返回参数配置页面", command=self.back_config_only).place(relx=1.0, y=5, x=-10, anchor="ne")
 
         ttk.Label(self, text="商品选品（系统筛选 + 手动添加）", font=("Microsoft YaHei UI", 16, "bold")).pack(anchor="w", pady=(0, 10))
 
@@ -2667,6 +2667,11 @@ class PagePick(ttk.Frame):
         self.wait_window(dlg)
         self.refresh()
 
+    def back_config_only(self):
+        # 仅返回配置页，不重置筛选/选中/计算结果
+        self.app.frames["PageConfig"].set_readonly(False)
+        self.app.show("PageConfig")
+
     def back_config(self):
         bag = self.app.ensure_current()
         bag.calc_ok = False
@@ -2738,7 +2743,7 @@ class PageResult(ttk.Frame):
 
         self.breadcrumb = ttk.Label(self, text="", foreground="#9ca3af")
         self.breadcrumb.pack(anchor="w")
-        ttk.Button(self, text="返回列表", command=lambda: self.app.show("PageBagList")).place(relx=1.0, y=5, x=-10, anchor="ne")
+        ttk.Button(self, text="返回商品选品页", command=self.back_pick_only).place(relx=1.0, y=5, x=-10, anchor="ne")
 
         ttk.Label(self, text="结果与操作（最终决策）", font=("Microsoft YaHei UI", 16, "bold")).pack(anchor="w", pady=(0, 10))
         self.banner = tk.Label(self, text="", anchor="w", padx=12, pady=10, font=("Microsoft YaHei UI", 11, "bold"))
@@ -2892,6 +2897,10 @@ class PageResult(ttk.Frame):
             self.app.show("PageBagList")
         else:
             self.on_show()
+
+    def back_pick_only(self):
+        # 返回选品页，不重置已选商品或概率结果
+        self.app.show("PagePick")
 
 # -------------------------------
 # main
