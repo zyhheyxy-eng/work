@@ -828,7 +828,6 @@ class ReminderSettingsDialog(tk.Toplevel):
 
         self.v_remind = tk.BooleanVar(value=bool(app.settings.get('reminder_enabled', True)))
         self.v_notify = tk.BooleanVar(value=bool(app.settings.get('notify_enabled', True)))
-        self.v_force = tk.BooleanVar(value=bool(app.settings.get('notify_supervisor_on_force', True)))
         self.v_person = tk.StringVar(value=str(app.settings.get('reminder_person', "")))
         self.v_phone = tk.StringVar(value=str(app.settings.get('reminder_phone', "")))
         self.v_time = tk.StringVar(value=str(app.settings.get('reminder_time', "16:00")))
@@ -839,7 +838,6 @@ class ReminderSettingsDialog(tk.Toplevel):
 
         ttk.Checkbutton(box, text="开启每日提醒弹窗（默认 16:00）", variable=self.v_remind).pack(anchor="w", pady=4)
         ttk.Checkbutton(box, text="开启通知（占位：可对接企业微信/邮件）", variable=self.v_notify).pack(anchor="w", pady=4)
-        ttk.Checkbutton(box, text="强制上线时通知上级（占位交互）", variable=self.v_force).pack(anchor="w", pady=4)
 
         ttk.Label(box, text="统计时间范围（昨天/今天/明天 + 时间），仅用于展示：", foreground="#374151").pack(anchor="w", pady=(10, 4))
         self._build_range_picker(box)
@@ -860,13 +858,6 @@ class ReminderSettingsDialog(tk.Toplevel):
         ttk.Entry(frm2, textvariable=self.v_time, width=10).pack(side="left")
         ttk.Label(frm2, text="(HH:MM，例如 16:00)", foreground="#6b7280").pack(side="left", padx=(6, 0))
         ttk.Label(box, text="系统将在设定时间点生成提醒（当前仅用于配置展示）", foreground="#6b7280").pack(anchor="w", pady=(2, 8))
-
-        sup = ttk.Frame(box)
-        sup.pack(fill="x", pady=(4, 0))
-        ttk.Label(sup, text="强制上线通知对象：", width=18).pack(side="left")
-        sup_name = str(app.settings.get('supervisor_name', '上级运营'))
-        sup_phone = str(app.settings.get('supervisor_phone', ''))
-        ttk.Label(sup, text=f"{sup_name}（{sup_phone}）", foreground="#374151").pack(side="left")
 
         ttk.Label(box, text="提醒设置当前仅用于功能展示，不会触发真实通知；不影响统计数据、上线/下线或选品逻辑。", foreground="#6b7280", wraplength=560, justify="left").pack(anchor="w", pady=(10, 0))
 
@@ -925,7 +916,6 @@ class ReminderSettingsDialog(tk.Toplevel):
 
         self.app.settings['reminder_enabled'] = bool(self.v_remind.get())
         self.app.settings['notify_enabled'] = bool(self.v_notify.get())
-        self.app.settings['notify_supervisor_on_force'] = bool(self.v_force.get())
         self.app.settings['reminder_person'] = self.v_person.get().strip() or "默认运营"
         self.app.settings['reminder_phone'] = self.v_phone.get().strip()
         self.app.settings['reminder_time'] = self.v_time.get().strip() or "16:00"
@@ -1054,6 +1044,8 @@ class ConfigPopup(tk.Toplevel):
         self.btn_online.pack(side="right")
         self.btn_force = ttk.Button(btns, text="强制上线", command=self._force_online)
         self.btn_force.pack(side="right", padx=8)
+        self.force_hint = ttk.Label(btns, text="仅超级管理员可进行强制上线", foreground="#6b7280")
+        self.force_hint.pack(side="right", padx=(0, 10))
 
         self._refresh_level_view()
         self._update_action_state()
