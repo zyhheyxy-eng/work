@@ -245,14 +245,15 @@ def expected_cost_total(cfg: Config, selected: List[Item], probs: Dict[int, floa
     return ec_base + ec_pity
 
 def auto_adapt(cfg: Config, selected: List[Item], c_target: float,
-              beta_max: float = 6.0, beta_step: float = 0.25) -> Tuple[bool, float, Dict[int, float]]:
+              beta_max: float = 6.0, beta_step: float = 0.25,
+              shift_empty_level_to_c: bool = True) -> Tuple[bool, float, Dict[int, float]]:
     best_ok = False
     best_ec = float("inf")
     best_probs: Dict[int, float] = {}
 
     beta = 1.0
     while beta <= beta_max + 1e-12:
-        probs = build_final_probs(cfg, selected, beta=beta)
+        probs = build_final_probs(cfg, selected, beta=beta, shift_empty_level_to_c=shift_empty_level_to_c)
         ec = expected_cost_total(cfg, selected, probs)
         if ec < best_ec:
             best_ec = ec
@@ -428,6 +429,7 @@ class App(tk.Tk):
         self.minsize(1060, 740)
 
         self.catalog: List[Item] = load_catalog_from_backend()
+        self._catalog_snapshot: Dict[int, Tuple[int, bool]] = self._build_catalog_snapshot()
 
         # 多福袋
         self.bags: Dict[str, BagState] = {}
@@ -561,48 +563,94 @@ class App(tk.Tk):
         lines.append("3) 每日提醒按「提醒与通知设置」的提醒时间/对象弹窗")
         return "\n".join(lines)
 
-    # ---------- lifecycle ----------
-    def prune_expired_from_selection(self, bag: BagState) -> bool:
-        removed = False
+    def _build_catalog_snapshot(self) -> Dict[int, Tuple[int, bool]]:
         now = dt.datetime.now()
+        snap: Dict[int, Tuple[int, bool]] = {}
         for it in self.catalog:
-            if it.discount_end and it.discount_end <= now:
+            expired = bool(it.discount_end and it.discount_end <= now)
+            if expired:
                 it.discount_status = "无活动"
+            snap[it.id] = (it.stock, expired)
+        return snap
+
+    def _update_catalog_snapshot(self) -> bool:
+        current = self._build_catalog_snapshot()
+        prev = getattr(self, "_catalog_snapshot", {}) or {}
+        changed = False
+        if set(current.keys()) != set(prev.keys()):
+            changed = True
+        else:
+            for k, v in current.items():
+                if prev.get(k) != v:
+                    changed = True
+                    break
+        self._catalog_snapshot = current
+        return changed
+
+    def _normalize_probs(self, probs: Dict[int, float]) -> Dict[int, float]:
+        total = sum(probs.values())
+        if total > 1e-12:
+            return {k: v / total for k, v in probs.items()}
+        return probs
+
+    # ---------- lifecycle ----------
+    def prune_and_recalc(self, bag: BagState) -> bool:
+        cfg = bag.cfg
+        if not cfg:
+            return False
+
+        now = dt.datetime.now()
+        removed = False
         for it_id in list(bag.selected_ids):
             it = next((x for x in self.catalog if x.id == it_id), None)
             if not it:
                 continue
-            if it.stock <= 0 or (it.discount_end and it.discount_end <= now):
+            expired = bool(it.discount_end and it.discount_end <= now)
+            manual = it_id in bag.manual_added_ids
+            if it.stock <= 0 or (expired and not manual):
                 bag.selected_ids.discard(it_id)
                 bag.manual_added_ids.discard(it_id)
                 removed = True
-        if removed:
-            bag.final_probs = {}
-            bag.calc_ok = False
-            bag.adapt_triggered = False
-            bag.adapt_success = False
-            bag.config_confirmed = False
-            self._auto_recalc_probs(bag)
-        return removed
 
-    def _auto_recalc_probs(self, bag: BagState):
-        cfg = bag.cfg
-        if not cfg:
-            return
+        if not removed:
+            return False
+
+        bag.config_confirmed = False
+        bag.calc_ok = False
+        bag.adapt_triggered = False
+        bag.adapt_success = False
+
         selected = [it for it in self.catalog if it.id in bag.selected_ids]
         if not selected:
-            return
-        try:
-            bag.final_probs = build_final_probs(cfg, selected, beta=1.0, shift_empty_level_to_c=False)
-        except Exception:
             bag.final_probs = {}
+            return True
+
+        P_eff = calc_p_eff(cfg.P, cfg.d, cfg.q)
+        c_target = calc_c_target(P_eff, cfg.g)
+
+        probs = build_final_probs(cfg, selected, beta=1.0, shift_empty_level_to_c=False)
+        ec = expected_cost_total(cfg, selected, probs)
+        if ec <= c_target + 1e-12:
+            bag.final_probs = self._normalize_probs(probs)
+            bag.calc_ok = True
+        else:
+            bag.adapt_triggered = True
+            ok, _, probs2 = auto_adapt(cfg, selected, c_target, shift_empty_level_to_c=False)
+            bag.adapt_success = bool(ok)
+            bag.calc_ok = bool(ok)
+            bag.final_probs = self._normalize_probs(probs2 if probs2 else {})
+        return True
+
+    def prune_expired_from_selection(self, bag: BagState) -> bool:
+        return self.prune_and_recalc(bag)
 
     def _tick_minutely(self):
         try:
             self._auto_down_by_time()
-            # 列表不需要每分钟刷新 UI；只做数据层维护
-            for bag in self.bags.values():
-                self.prune_expired_from_selection(bag)
+            changed = self._update_catalog_snapshot()
+            if changed:
+                for bag in self.bags.values():
+                    self.prune_and_recalc(bag)
             self._maybe_show_reminder()
         finally:
             self.after(60_000, self._tick_minutely)
@@ -2731,7 +2779,7 @@ class PagePick(ttk.Frame):
             self.app.show("PageConfig")
             return
 
-        pruned = self.app.prune_expired_from_selection(bag)
+        pruned = self.app.prune_and_recalc(bag)
         now = dt.datetime.now()
 
         # 已选列表（受搜索/等级/库存筛选影响）
@@ -2783,7 +2831,9 @@ class PagePick(ttk.Frame):
         self.cand_info.configure(text=f"共 {cand_total} 条，{cand_pages} 页，当前第 {self.cand_page} 页")
         status_msg = f"候选显示：{len(cand_slice)} / {cand_total}｜已勾选：{len(bag.selected_ids)}"
         if pruned:
-            status_msg += "｜部分商品因库存为 0 或折扣到期已自动剔除，概率已重新计算"
+            status_msg += "｜部分商品因库存为 0 或折扣到期已自动剔除，已触发 β 自适应重算"
+            if not bag.selected_ids:
+                status_msg += "｜勾选商品为空"
         self.status.configure(text=status_msg)
         self._refresh_sort_indicators()
 
@@ -2995,7 +3045,7 @@ class PageResult(ttk.Frame):
 
         self.breadcrumb.configure(text=f"福袋列表 → {bag.bag_id} {cfg.bag_name} → 结果与操作")
 
-        pruned = self.app.prune_expired_from_selection(bag)
+        pruned = self.app.prune_and_recalc(bag)
         selected = [it for it in self.app.catalog if it.id in bag.selected_ids]
         probs = bag.final_probs or {}
 
@@ -3034,7 +3084,9 @@ class PageResult(ttk.Frame):
                 self.banner.configure(bg="#8a1c1c", fg="white", text=f"⚠️ 预测利润为负：{profit_val:.2f} 元（利润率 {profit_rate * 100:.2f}%）")
                 note_msg = "预测利润为负：普通运营不可上线，仅可请超管在弹窗中强制上线。"
         if pruned:
-            note_msg = (note_msg + "｜" if note_msg else "") + "部分商品因库存为 0 或折扣到期已自动剔除，概率已重新计算"
+            note_msg = (note_msg + "｜" if note_msg else "") + "部分商品因库存为 0 或折扣到期已自动剔除，已触发 β 自适应重算"
+            if not bag.selected_ids:
+                note_msg = (note_msg + "｜" if note_msg else "") + "勾选商品为空"
         self.note.configure(text=note_msg)
 
     def on_click(self, event):
