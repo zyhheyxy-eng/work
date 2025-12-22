@@ -5,7 +5,7 @@
 # ✅ 首页新增「福袋列表页」：列表→编辑配置→选品→计算→模拟→上线→返回列表
 # ✅ 补全上下架时间配置（到期自动下架）
 # ✅ 手动添加商品：带“确认添加” + 分配等级 + 成本区间校验 + 真正加入当前福袋已选池
-# ✅ 保留 V3 全部能力：筛选/手动加商品、期望成本校验、自适应调权、保底、抽卡模拟、概率公示、活动结束自动剔除、库存报警、每日16:00提醒
+# ✅ 保留 V3 全部能力：筛选/手动加商品、期望成本校验、自适应调权、保底、概率公示、活动结束自动剔除、库存报警
 #
 # 运行：python fudai_ops_v5_operator_app.py
 # 依赖：Python 标准库（tkinter）
@@ -24,6 +24,8 @@ import datetime as dt
 import calendar as cal
 import random
 import json
+import urllib.parse
+import urllib.request
 
 # -------------------------------
 # 常量
@@ -63,6 +65,7 @@ class Config:
     p_k: Dict[str, float]     # 等级概率（0~1）
     cost_ranges: Dict[str, LevelRange]  # 数值型成本范围（元）
     notify_person: str = "当前操作人"
+    notify_phone: str = ""
 
 @dataclass
 class Item:
@@ -79,7 +82,7 @@ class Item:
     version: str = ""
     stock_type: str = "通用"
 
-    # 折扣活动信息（用于“自动下架/提醒”）
+    # 折扣活动信息（用于自动剔除与展示）
     discount_status: str = "无活动"  # "活动中" / "无活动" / "即将结束"
     discount_end: Optional[dt.datetime] = None  # 活动结束时间（无活动为 None）
 
@@ -118,7 +121,8 @@ class BagState:
     adapt_success: bool = False
     final_probs: Dict[int, float] = None
     config_confirmed: bool = False
-    last_auto_offline_at: Optional[dt.datetime] = None
+    last_profit_neg_notify_at: Optional[dt.datetime] = None
+    last_low_stock_sms_date: Optional[dt.date] = None
 
     def __post_init__(self):
         if self.filtered is None: self.filtered = []
@@ -500,21 +504,33 @@ class App(tk.Tk):
         ec = expected_cost_total(cfg, selected, probs)
         return P_eff - ec
 
+    def _send_sms(self, phone: str, msg: str) -> None:
+        if not phone:
+            return
+        try:
+            data = urllib.parse.urlencode({"phone": phone, "msg": msg}).encode("utf-8")
+            req = urllib.request.Request("https://example.com/mock-sms", data=data, method="POST")
+            urllib.request.urlopen(req, timeout=3)
+        except Exception:
+            pass
+
     def notify_bag_offlined(self, bag: BagState, reason: str, profit_val: float, profit_rate: float, remain_count: int) -> None:
         cfg = bag.cfg
         name = cfg.bag_name if cfg else bag.bag_id
         person = getattr(cfg, "notify_person", "当前操作人") if cfg else "当前操作人"
         msg = (
-            f"已自动下架：{bag.bag_id}｜{name}\n"
+            f"福袋：{bag.bag_id}｜{name}\n"
             f"原因：{reason}\n"
             f"预测利润：{profit_val:.2f} 元（利润率 {profit_rate*100:.2f}%）\n"
             f"剔除后剩余商品数：{remain_count}\n"
-            f"通知人：{person}"
+            f"通知人：{person}\n"
+            f"时间：{dt.datetime.now():%Y-%m-%d %H:%M}"
         )
         try:
-            messagebox.showwarning("自动下架通知", msg)
+            messagebox.showwarning("利润预警", msg)
         except Exception:
             pass
+        self._send_sms(getattr(cfg, "notify_phone", ""), msg)
 
     def can_go_online(self, bag: BagState) -> Tuple[bool, str]:
         if not bag.cfg:
@@ -523,6 +539,9 @@ class App(tk.Tk):
             return False, "缺少已选商品，无法上线。"
         if not bag.final_probs:
             return False, "缺少最终概率，请先完成计算。"
+        profit_val = self._profit_value(bag.cfg, [it for it in self.catalog if it.id in bag.selected_ids], bag.final_probs)
+        if profit_val is not None and profit_val < -1e-12 and getattr(bag.cfg, "notify_person", "") != "超管":
+            return False, "预测利润为负，仅超管可上线。"
         return True, ""
 
     def set_online(self, bag: BagState, online: bool) -> Tuple[bool, str]:
@@ -658,8 +677,8 @@ class App(tk.Tk):
                 bag.calc_ok = bool(ok)
                 bag.final_probs = self._normalize_probs(probs2 if probs2 else {})
 
-        # 自动下架：上线后剔除导致预测利润为负
-        if bag.status == "已上线":
+        # 已上线场景下，剔除后预测利润为负：通知但不下架
+        if removed and bag.status == "已上线":
             probs_now = bag.final_probs or {}
             profit_val = self._profit_value(cfg, selected, probs_now)
             if profit_val is None:
@@ -668,13 +687,12 @@ class App(tk.Tk):
             profit_rate = (profit_val / P_eff) if P_eff else 0.0
             if profit_val < -1e-12:
                 now_dt = dt.datetime.now()
-                recent = bag.last_auto_offline_at and (now_dt - bag.last_auto_offline_at).total_seconds() < 600
-                bag.status = "未上线"
+                recent = bag.last_profit_neg_notify_at and (now_dt - bag.last_profit_neg_notify_at).total_seconds() < 600
                 if not recent:
-                    bag.last_auto_offline_at = now_dt
+                    bag.last_profit_neg_notify_at = now_dt
                     self.notify_bag_offlined(
                         bag,
-                        "因折扣到期或库存为0的商品被剔除后预测利润为负，自动下架",
+                        "因折扣到期或库存为0的商品被剔除，当前预测利润为负",
                         profit_val,
                         profit_rate,
                         len(selected),
@@ -691,6 +709,7 @@ class App(tk.Tk):
             if changed:
                 for bag in self.bags.values():
                     self.prune_and_recalc(bag)
+            self._check_low_stock_sms()
         finally:
             self.after(60_000, self._tick_minutely)
 
@@ -700,6 +719,29 @@ class App(tk.Tk):
             if bag.cfg and bag.status == "已上线":
                 if now >= bag.cfg.down_time:
                     bag.status = "未上线"
+
+    def _check_low_stock_sms(self):
+        now = dt.datetime.now()
+        if not (now.hour == 16 and now.minute == 0):
+            return
+        for bag in self.bags.values():
+            if bag.status != "已上线" or not bag.cfg:
+                continue
+            if bag.last_low_stock_sms_date == now.date():
+                continue
+            selected = [it for it in self.catalog if it.id in bag.selected_ids]
+            low = [it for it in selected if it.stock < 100]
+            if not low:
+                continue
+            bag.last_low_stock_sms_date = now.date()
+            names = ", ".join([f"{it.name}({it.stock})" for it in low[:20]])
+            msg = (
+                f"福袋：{bag.bag_id}｜{bag.cfg.bag_name}\n"
+                f"低库存商品：{len(low)} 个（阈值<100）\n"
+                f"示例：{names}\n"
+                f"时间：{now:%Y-%m-%d %H:%M}"
+            )
+            self._send_sms(getattr(bag.cfg, "notify_phone", ""), msg)
 
     def reset_downstream(self, bag: BagState, keep_config: bool = True):
         bag.filtered = []
@@ -2650,13 +2692,13 @@ class PagePick(ttk.Frame):
                 bag.calc_ok = True
                 bag.adapt_triggered = False
                 bag.adapt_success = False
-                bag.final_probs = probs
+                bag.final_probs = self.app._normalize_probs(probs)
             else:
                 bag.adapt_triggered = True
                 ok, _, probs2 = auto_adapt(cfg, selected, c_target)
                 bag.adapt_success = bool(ok)
                 bag.calc_ok = bool(ok)
-                bag.final_probs = probs2
+                bag.final_probs = self.app._normalize_probs(probs2 if probs2 else {})
             bag.config_confirmed = False
             self.app.show("PageResult")
         except Exception as e:
