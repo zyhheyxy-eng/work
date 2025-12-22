@@ -667,10 +667,6 @@ class ManualAddDialog(tk.Toplevel):
         self.btn_confirm = ttk.Button(top, text="确认添加到当前福袋", command=self.confirm)
         self.btn_confirm.grid(row=0, column=4, sticky="w", padx=(12, 0))
 
-        ttk.Label(top, text="库存报警值：").grid(row=1, column=0, sticky="w", pady=(10, 0))
-        self.v_alarm = tk.StringVar(value=str(DEFAULT_ALARM))
-        ttk.Entry(top, textvariable=self.v_alarm, width=10).grid(row=1, column=1, sticky="w", pady=(10, 0))
-
         self.lbl_cost_check = ttk.Label(top, text="成本校验：—", foreground="#9ca3af")
         self.lbl_cost_check.grid(row=1, column=2, columnspan=2, sticky="w", padx=(16, 0), pady=(10, 0))
 
@@ -755,14 +751,6 @@ class ManualAddDialog(tk.Toplevel):
         if not sel:
             messagebox.showwarning("提示", "请先选择一个或多个商品。")
             return
-        try:
-            alarm = int(float(self.v_alarm.get().strip()))
-            if alarm <= 0:
-                raise ValueError
-        except Exception:
-            messagebox.showerror("输入错误", "库存报警值请输入正整数。")
-            return
-
         lvl = self._parse_level()
         stock_type = self._parse_stock_type()
         r = self.bag.cfg.cost_ranges[lvl]
@@ -773,7 +761,6 @@ class ManualAddDialog(tk.Toplevel):
             if not it:
                 continue
             it.level = lvl
-            it.alarm = alarm
             it.stock_type = stock_type
 
             self.bag.selected_ids.add(it.id)
@@ -2224,7 +2211,7 @@ class PageConfig(ttk.Frame):
             e_hi.grid(row=0, column=5, sticky="w")
             self._range_entries.extend([e_lo, e_hi])
 
-        ttk.Label(box, text="库存筛选：库存需大于0；低于报警值在选品页提示。", foreground="#6b7280").pack(anchor="w", pady=(6,0))
+        ttk.Label(box, text="库存筛选：库存需大于0，低库存可在选品页直接查看库存数。", foreground="#6b7280").pack(anchor="w", pady=(6,0))
 
         ttk.Label(box, text="保底设置", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
         self.cb_pity = ttk.Checkbutton(box, text="开启：累计 X 抽必出传说", variable=self.v_pity_on, command=self._toggle_x)
@@ -2494,8 +2481,6 @@ class PagePick(ttk.Frame):
         self.cand_sort_key = None
         self.cand_sort_desc = False
 
-        self.v_stock_threshold = tk.StringVar(value="")
-
         self.breadcrumb = ttk.Label(self, text="", foreground="#9ca3af")
         self.breadcrumb.pack(anchor="w")
         ttk.Button(self, text="返回参数配置页面", command=self.back_config_only).place(relx=1.0, y=5, x=-10, anchor="ne")
@@ -2512,12 +2497,6 @@ class PagePick(ttk.Frame):
         for k in LEVELS:
             ttk.Checkbutton(lvf, text=LEVEL_NAME[k], variable=self.level_vars[k], command=self.refresh).pack(side="left", padx=(0, 6))
 
-        ttk.Label(top, text="库存阈值≥").pack(side="left", padx=(16, 4))
-        ent_stock = ttk.Entry(top, textvariable=self.v_stock_threshold, width=10, justify="left")
-        ent_stock.pack(side="left")
-        self.app.apply_placeholder(ent_stock, self.v_stock_threshold, "库存N")
-        ent_stock.bind("<KeyRelease>", lambda e: self.refresh())
-
         ttk.Label(top, text="搜索：").pack(side="right", padx=(6, 4))
         self.v_search = tk.StringVar(value="")
         ent = ttk.Entry(top, textvariable=self.v_search, width=24, justify="left")
@@ -2525,9 +2504,12 @@ class PagePick(ttk.Frame):
         self.app.apply_placeholder(ent, self.v_search, "搜索 ID/名称")
         ent.bind("<KeyRelease>", lambda e: self.refresh())
 
-        # 上层：已选择商品区（滚动浏览，无分页）
-        selected_box = ttk.Labelframe(self, text="已选择商品", padding=8)
-        selected_box.pack(fill="both", expand=True, pady=(6, 6))
+        paned = ttk.Panedwindow(self, orient="vertical")
+        paned.pack(fill="both", expand=True, pady=(6, 6))
+
+        # 上层：已选择商品区（滚动浏览，无分页，可拖拽调整高度）
+        selected_box = ttk.Labelframe(paned, text="已选择商品", padding=8)
+        paned.add(selected_box, weight=1, minsize=160)
 
         sel_cols = [
             ("action", "操作", 80, "center"),
@@ -2558,9 +2540,9 @@ class PagePick(ttk.Frame):
         self.tree_selected.pack(fill="both", expand=True)
         self.tree_selected.bind("<Button-1>", self.on_click_selected)
 
-        # 下层：候选商品区（独立分页）
-        cand_box = ttk.Labelframe(self, text="候选商品", padding=8)
-        cand_box.pack(fill="both", expand=True, pady=(6, 6))
+        # 下层：候选商品区（独立分页，可拖拽调整高度）
+        cand_box = ttk.Labelframe(paned, text="候选商品", padding=8)
+        paned.add(cand_box, weight=2, minsize=200)
 
         cand_cols = [
             ("action", "操作", 80, "center"),
@@ -2573,7 +2555,6 @@ class PagePick(ttk.Frame):
             ("price", "售价", 90, "e"),
             ("steam_low", "Steam史低", 100, "e"),
             ("cost", "成本", 90, "e"),
-            ("alarm", "库存报警值", 100, "center"),
             ("disc", "折扣活动状态", 150, "center"),
             ("src", "来源", 90, "center"),
         ]
@@ -2592,7 +2573,6 @@ class PagePick(ttk.Frame):
         self.tree.pack(fill="both", expand=True)
 
         self.tree.bind("<Button-1>", self.on_click_candidate)
-        self.tree.bind("<Double-1>", self.on_double_click_alarm)
 
         cand_pg = ttk.Frame(cand_box, padding=(0, 6))
         cand_pg.pack(fill="x")
@@ -2626,16 +2606,10 @@ class PagePick(ttk.Frame):
         self.refresh()
 
     def _is_low_stock(self, it: Item) -> bool:
-        return it.stock < max(1, it.alarm)
+        return False
 
     def _stock_ok(self, it: Item) -> bool:
-        try:
-            threshold = int(float(self.v_stock_threshold.get().strip()))
-            if threshold < 0:
-                return True
-            return it.stock >= threshold
-        except Exception:
-            return True
+        return True
 
     def _is_expired_for_candidate(self, it: Item, now: dt.datetime) -> bool:
         """系统筛选商品折扣到期后不在候选区展示，手动添加保留。"""
@@ -2741,7 +2715,7 @@ class PagePick(ttk.Frame):
 
         self.tree_selected.delete(*self.tree_selected.get_children())
         for it in selected_items:
-            stock = f"{it.stock}" if self._is_low_stock(it) else str(it.stock)
+            stock = str(it.stock)
             disc = self._disc_text(it, now)
             src = "手动添加" if it.id in bag.manual_added_ids else "系统筛选"
             self.tree_selected.insert("", "end", iid=str(it.id),
@@ -2774,12 +2748,12 @@ class PagePick(ttk.Frame):
 
         self.tree.delete(*self.tree.get_children())
         for it in cand_slice:
-            stock = f"{it.stock}" if self._is_low_stock(it) else str(it.stock)
+            stock = str(it.stock)
             disc = self._disc_text(it, now)
             src = "手动添加" if it.id in bag.manual_added_ids else "系统筛选"
             self.tree.insert("", "end", iid=str(it.id),
                              values=("选择", it.id, it.name, it.version or "-", it.stock_type or "通用", LEVEL_BADGE[it.level], stock,
-                                     f"{it.price:.2f}", f"{it.steam_lowest:.2f}", f"{it.cost:.2f}", str(it.alarm), disc, src))
+                                     f"{it.price:.2f}", f"{it.steam_lowest:.2f}", f"{it.cost:.2f}", disc, src))
 
         self.cand_info.configure(text=f"共 {cand_total} 条，{cand_pages} 页，当前第 {self.cand_page} 页")
         self.status.configure(text=f"候选显示：{len(cand_slice)} / {cand_total}｜已勾选：{len(bag.selected_ids)}（系统筛选商品折扣结束会自动剔除，手动添加不受影响）")
@@ -2840,44 +2814,6 @@ class PagePick(ttk.Frame):
         bag.action_order[it_id] = bag.action_counter
         bag.config_confirmed = False
         self.refresh()
-
-    def on_double_click_alarm(self, event):
-        row = self.tree.identify_row(event.y)
-        col = self.tree.identify_column(event.x)
-        if not row or col != "#11":
-            return
-        bag = self.app.ensure_current()
-        it_id = int(row)
-        it = next((x for x in self.app.catalog if x.id == it_id), None)
-        if not it:
-            return
-
-        win = tk.Toplevel(self)
-        win.title("修改库存报警值")
-        win.geometry("320x150")
-        win.resizable(False, False)
-        ttk.Label(win, text=f"{it.name}", font=("Microsoft YaHei UI", 10, "bold")).pack(anchor="w", padx=12, pady=(12, 6))
-        box = ttk.Frame(win, padding=12)
-        box.pack(fill="x")
-        ttk.Label(box, text="库存报警值：").pack(side="left")
-        v_alarm = tk.StringVar(value=str(it.alarm))
-        ttk.Entry(box, textvariable=v_alarm, width=10).pack(side="left")
-
-        def save():
-            try:
-                v = int(float(v_alarm.get().strip()))
-                if v <= 0:
-                    raise ValueError
-                it.alarm = v
-                win.destroy()
-                self.refresh()
-            except Exception:
-                messagebox.showerror("输入错误", "库存报警值请输入正整数。")
-
-        btns = ttk.Frame(win, padding=12)
-        btns.pack(fill="x")
-        ttk.Button(btns, text="保存", command=save).pack(side="left")
-        ttk.Button(btns, text="取消", command=win.destroy).pack(side="left", padx=8)
 
     def select_all(self):
         bag = self.app.ensure_current()
@@ -3042,7 +2978,7 @@ class PageResult(ttk.Frame):
             p = probs.get(it.id, 0.0)
             if p <= 0:
                 continue
-            stock = f"{it.stock}" if it.stock < max(1, it.alarm) else str(it.stock)
+            stock = str(it.stock)
             remain = "无活动"
             if it.discount_end and it.discount_end > now:
                 td = it.discount_end - now
