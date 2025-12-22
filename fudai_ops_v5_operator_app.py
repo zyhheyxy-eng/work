@@ -202,16 +202,22 @@ def apply_matching_level(cfg: Config, it: Item) -> None:
     lvl = assign_level_by_cost(cfg, it)
     it.level = lvl if lvl is not None else "C"
 
-def build_final_probs(cfg: Config, selected: List[Item], beta: float) -> Dict[int, float]:
+def build_final_probs(cfg: Config, selected: List[Item], beta: float,
+                      shift_empty_level_to_c: bool = True) -> Dict[int, float]:
     by_level: Dict[str, List[Item]] = {k: [] for k in LEVELS}
     for it in selected:
         by_level[it.level].append(it)
 
     p_k = dict(cfg.p_k)
-    for lvl in LEVELS:
-        if p_k.get(lvl, 0.0) > 0 and len(by_level[lvl]) == 0:
-            p_k["C"] = p_k.get("C", 0.0) + p_k[lvl]
-            p_k[lvl] = 0.0
+    if shift_empty_level_to_c:
+        for lvl in LEVELS:
+            if p_k.get(lvl, 0.0) > 0 and len(by_level[lvl]) == 0:
+                p_k["C"] = p_k.get("C", 0.0) + p_k[lvl]
+                p_k[lvl] = 0.0
+    else:
+        for lvl in LEVELS:
+            if len(by_level[lvl]) == 0:
+                p_k[lvl] = 0.0
 
     probs: Dict[int, float] = {}
     for lvl, its in by_level.items():
@@ -556,18 +562,40 @@ class App(tk.Tk):
         return "\n".join(lines)
 
     # ---------- lifecycle ----------
-    def prune_expired_from_selection(self, bag: BagState):
+    def prune_expired_from_selection(self, bag: BagState) -> bool:
+        removed = False
         now = dt.datetime.now()
         for it in self.catalog:
             if it.discount_end and it.discount_end <= now:
                 it.discount_status = "无活动"
-        # 折扣活动结束：仅对系统筛选商品自动剔除，手动添加不受影响
         for it_id in list(bag.selected_ids):
-            if it_id in bag.manual_added_ids:
-                continue
             it = next((x for x in self.catalog if x.id == it_id), None)
-            if it and it.discount_end and it.discount_end <= now:
-                bag.selected_ids.remove(it_id)
+            if not it:
+                continue
+            if it.stock <= 0 or (it.discount_end and it.discount_end <= now):
+                bag.selected_ids.discard(it_id)
+                bag.manual_added_ids.discard(it_id)
+                removed = True
+        if removed:
+            bag.final_probs = {}
+            bag.calc_ok = False
+            bag.adapt_triggered = False
+            bag.adapt_success = False
+            bag.config_confirmed = False
+            self._auto_recalc_probs(bag)
+        return removed
+
+    def _auto_recalc_probs(self, bag: BagState):
+        cfg = bag.cfg
+        if not cfg:
+            return
+        selected = [it for it in self.catalog if it.id in bag.selected_ids]
+        if not selected:
+            return
+        try:
+            bag.final_probs = build_final_probs(cfg, selected, beta=1.0, shift_empty_level_to_c=False)
+        except Exception:
+            bag.final_probs = {}
 
     def _tick_minutely(self):
         try:
@@ -2703,7 +2731,7 @@ class PagePick(ttk.Frame):
             self.app.show("PageConfig")
             return
 
-        self.app.prune_expired_from_selection(bag)
+        pruned = self.app.prune_expired_from_selection(bag)
         now = dt.datetime.now()
 
         # 已选列表（受搜索/等级/库存筛选影响）
@@ -2753,7 +2781,10 @@ class PagePick(ttk.Frame):
                                      f"{it.price:.2f}", f"{it.steam_lowest:.2f}", f"{it.cost:.2f}", disc, src))
 
         self.cand_info.configure(text=f"共 {cand_total} 条，{cand_pages} 页，当前第 {self.cand_page} 页")
-        self.status.configure(text=f"候选显示：{len(cand_slice)} / {cand_total}｜已勾选：{len(bag.selected_ids)}（系统筛选商品折扣结束会自动剔除，手动添加不受影响）")
+        status_msg = f"候选显示：{len(cand_slice)} / {cand_total}｜已勾选：{len(bag.selected_ids)}"
+        if pruned:
+            status_msg += "｜部分商品因库存为 0 或折扣到期已自动剔除，概率已重新计算"
+        self.status.configure(text=status_msg)
         self._refresh_sort_indicators()
 
     def _paginate(self, items: List[Item], page: int, size: int) -> Tuple[List[Item], int, int, int]:
@@ -2964,7 +2995,7 @@ class PageResult(ttk.Frame):
 
         self.breadcrumb.configure(text=f"福袋列表 → {bag.bag_id} {cfg.bag_name} → 结果与操作")
 
-        self.app.prune_expired_from_selection(bag)
+        pruned = self.app.prune_expired_from_selection(bag)
         selected = [it for it in self.app.catalog if it.id in bag.selected_ids]
         probs = bag.final_probs or {}
 
@@ -2990,17 +3021,21 @@ class PageResult(ttk.Frame):
         P_eff = calc_p_eff(cfg.P, cfg.d, cfg.q)
         profit_val = self.app._profit_value(cfg, selected, probs) if probs else None
 
+        note_msg = ""
         if not probs or profit_val is None:
             self.banner.configure(bg="#8a1c1c", fg="white", text="❌ 缺少最终概率，请返回选品页完成计算。")
-            self.note.configure(text="需先完成计算后再决定上线。")
+            note_msg = "需先完成计算后再决定上线。"
         else:
             profit_rate = (profit_val / P_eff) if P_eff > 0 else 0.0
             if profit_val >= -1e-12:
                 self.banner.configure(bg="#1f6f3c", fg="white", text=f"✅ 预测利润 {profit_val:.2f} 元（利润率 {profit_rate * 100:.2f}% ，目标利润率仅供参考 {cfg.g * 100:.0f}%）")
-                self.note.configure(text="预测利润为非负：可在「查看当前配置」中直接上线。")
+                note_msg = "预测利润为非负：可在「查看当前配置」中直接上线。"
             else:
                 self.banner.configure(bg="#8a1c1c", fg="white", text=f"⚠️ 预测利润为负：{profit_val:.2f} 元（利润率 {profit_rate * 100:.2f}%）")
-                self.note.configure(text="预测利润为负：普通运营不可上线，仅可请超管在弹窗中强制上线。")
+                note_msg = "预测利润为负：普通运营不可上线，仅可请超管在弹窗中强制上线。"
+        if pruned:
+            note_msg = (note_msg + "｜" if note_msg else "") + "部分商品因库存为 0 或折扣到期已自动剔除，概率已重新计算"
+        self.note.configure(text=note_msg)
 
     def on_click(self, event):
         # 点击“移除”
