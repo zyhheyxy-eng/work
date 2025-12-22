@@ -2504,13 +2504,9 @@ class PagePick(ttk.Frame):
         self.app.apply_placeholder(ent, self.v_search, "搜索 ID/名称")
         ent.bind("<KeyRelease>", lambda e: self.refresh())
 
-        paned = ttk.Panedwindow(self, orient="vertical")
-        paned.pack(fill="both", expand=True, pady=(6, 6))
-
-        # 上层：已选择商品区（滚动浏览，无分页，可拖拽调整高度）
-        selected_box = ttk.Labelframe(paned, text="已选择商品", padding=8)
-        paned.add(selected_box, weight=1)
-        paned.pane(selected_box, minsize=160)
+        # 上层：已选择商品区（滚动浏览，无分页，固定占位）
+        selected_box = ttk.Labelframe(self, text="已选择商品", padding=8)
+        selected_box.pack(fill="x", pady=(6, 6))
 
         sel_cols = [
             ("action", "操作", 80, "center"),
@@ -2541,10 +2537,9 @@ class PagePick(ttk.Frame):
         self.tree_selected.pack(fill="both", expand=True)
         self.tree_selected.bind("<Button-1>", self.on_click_selected)
 
-        # 下层：候选商品区（独立分页，可拖拽调整高度）
-        cand_box = ttk.Labelframe(paned, text="候选商品", padding=8)
-        paned.add(cand_box, weight=2)
-        paned.pane(cand_box, minsize=200)
+        # 下层：候选商品区（独立分页，固定布局）
+        cand_box = ttk.Labelframe(self, text="候选商品", padding=8)
+        cand_box.pack(fill="both", expand=True, pady=(0, 6))
 
         cand_cols = [
             ("action", "操作", 80, "center"),
