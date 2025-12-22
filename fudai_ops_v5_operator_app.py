@@ -19,6 +19,7 @@ import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
+from functools import cmp_to_key
 import datetime as dt
 import calendar as cal
 import random
@@ -75,6 +76,8 @@ class Item:
     blacklisted: bool = False
     platform: str = "steam"
     is_dlc: bool = False
+    version: str = ""
+    stock_type: str = "通用"
 
     # 折扣活动信息（用于“自动下架/提醒”）
     discount_status: str = "无活动"  # "活动中" / "无活动" / "即将结束"
@@ -106,6 +109,8 @@ class BagState:
     filtered: List[Item] = None
     selected_ids: set[int] = None
     manual_added_ids: set[int] = None
+    action_order: Dict[int, int] = None
+    action_counter: int = 0
 
     # 计算/模拟
     calc_ok: bool = False
@@ -119,6 +124,7 @@ class BagState:
         if self.selected_ids is None: self.selected_ids = set()
         if self.manual_added_ids is None: self.manual_added_ids = set()
         if self.final_probs is None: self.final_probs = {}
+        if self.action_order is None: self.action_order = {}
 
 
 @dataclass
@@ -287,6 +293,8 @@ def load_catalog_from_backend(seed: int = 20251212, total: int = 800) -> List[It
             blacklisted=(rnd.random() < 0.01),
             platform=("steam" if rnd.random() < 0.98 else "other"),
             is_dlc=(rnd.random() < 0.02),
+            version=rnd.choice(["标准版", "豪华版", "年度版", ""], ),
+            stock_type="通用",
             discount_status=discount_status,
             discount_end=discount_end,
             alarm=DEFAULT_ALARM,
@@ -615,6 +623,8 @@ class App(tk.Tk):
         bag.adapt_success = False
         bag.final_probs = {}
         bag.config_confirmed = False
+        bag.action_order = {}
+        bag.action_counter = 0
         if not keep_config:
             bag.cfg = None
 
@@ -647,6 +657,11 @@ class ManualAddDialog(tk.Toplevel):
         cb.grid(row=0, column=3, sticky="w")
         cb.current(4)
         cb.bind("<<ComboboxSelected>>", lambda e: self._refresh_cost_check())
+
+        ttk.Label(top, text="库存类型：").grid(row=0, column=4, sticky="e", padx=(16, 6))
+        self.v_stock_type = tk.StringVar(value="临时")
+        cb_st = ttk.Combobox(top, textvariable=self.v_stock_type, values=["通用", "临时"], width=10, state="readonly")
+        cb_st.grid(row=0, column=5, sticky="w")
 
         # 把「确认添加」放在分配等级旁，方便点选后立即操作
         self.btn_confirm = ttk.Button(top, text="确认添加到当前福袋", command=self.confirm)
@@ -687,6 +702,10 @@ class ManualAddDialog(tk.Toplevel):
         if "(" in s and ")" in s:
             return s.split("(")[-1].split(")")[0]
         return "C"
+
+    def _parse_stock_type(self) -> str:
+        v = (self.v_stock_type.get() or "通用").strip()
+        return v if v in ("通用", "临时") else "通用"
 
     def refresh(self):
         kw = self.v_search.get().strip().lower()
@@ -745,6 +764,7 @@ class ManualAddDialog(tk.Toplevel):
             return
 
         lvl = self._parse_level()
+        stock_type = self._parse_stock_type()
         r = self.bag.cfg.cost_ranges[lvl]
         added, off_range = [], []
 
@@ -754,9 +774,12 @@ class ManualAddDialog(tk.Toplevel):
                 continue
             it.level = lvl
             it.alarm = alarm
+            it.stock_type = stock_type
 
             self.bag.selected_ids.add(it.id)
             self.bag.manual_added_ids.add(it.id)
+            self.bag.action_counter += 1
+            self.bag.action_order[it.id] = self.bag.action_counter
 
             if r.lo <= it.cost <= r.hi:
                 added.append(it.name)
@@ -1286,7 +1309,7 @@ class PageBagList(ttk.Frame):
         top = ttk.Frame(self)
         top.pack(fill="x", pady=(0, 8))
         ttk.Button(top, text="新建福袋", command=self.new_bag).pack(side="left")
-        ttk.Button(top, text="提醒设置", command=self.open_reminder_settings).pack(side="left", padx=8)
+        ttk.Button(top, text="提醒注意", command=self.open_reminder_notice).pack(side="left", padx=8)
         ttk.Button(top, text="设置月度福袋", command=self.open_monthly).pack(side="left", padx=8)
 
         # 筛选区
@@ -1303,7 +1326,7 @@ class PageBagList(ttk.Frame):
         cb_type = ttk.Combobox(filt, textvariable=self.v_type, values=["请选择", "原福袋", "其他类型"], width=10, state="readonly")
         cb_type.pack(side="left")
 
-        ttk.Label(filt, text="开启状态：").pack(side="left", padx=(12, 4))
+        ttk.Label(filt, text="上下线状态：").pack(side="left", padx=(12, 4))
         self.v_status = tk.StringVar(value="请选择")
         cb_status = ttk.Combobox(filt, textvariable=self.v_status, values=["请选择", "开启", "关闭"], width=10, state="readonly")
         cb_status.pack(side="left")
@@ -1358,8 +1381,8 @@ class PageBagList(ttk.Frame):
 
         self._view_mode = False
 
-    def open_reminder_settings(self):
-        ReminderSettingsDialog(self, self.app)
+    def open_reminder_notice(self):
+        messagebox.showinfo("提醒注意", "每日 16:00 提醒：库存 < 100（仅提示，无法配置）")
 
     def open_monthly(self):
         self.app.show("PageMonthlyBag")
@@ -1961,10 +1984,12 @@ class PageConfig(ttk.Frame):
         for lvl in LEVELS:
             ttk.Radiobutton(tabs, text=LEVEL_NAME[lvl], value=lvl, variable=self.preview_level, command=self.refresh_preview).pack(side="left", padx=(0, 8))
 
-        cols_prev = ("name", "stock", "price", "steam_lowest", "cost", "discount", "prob", "src")
+        cols_prev = ("name", "version", "stock_type", "stock", "price", "steam_lowest", "cost", "discount", "prob", "src")
         self.preview_tree = ttk.Treeview(preview_box, columns=cols_prev, show="headings", height=7)
         self.preview_headings = {
             "name": "游戏名",
+            "version": "版本",
+            "stock_type": "库存类型",
             "stock": "库存",
             "price": "售价",
             "steam_lowest": "Steam史低",
@@ -1974,7 +1999,9 @@ class PageConfig(ttk.Frame):
             "src": "来源",
         }
         for c, w, a, cmd in [
-            ("name", 260, "w", None),
+            ("name", 200, "w", lambda col="name": self._sort_preview(col)),
+            ("version", 90, "center", None),
+            ("stock_type", 90, "center", None),
             ("stock", 80, "center", None),
             ("price", 90, "e", lambda col="price": self._sort_preview(col)),
             ("steam_lowest", 90, "e", None),
@@ -2346,11 +2373,13 @@ class PageConfig(ttk.Frame):
                 rows.sort(key=disc_key, reverse=not asc)
             elif sort_col in {"cost", "price"}:
                 rows.sort(key=lambda item: getattr(item[0], sort_col, 0.0), reverse=not asc)
+            elif sort_col == "name":
+                rows.sort(key=lambda item: (item[0].name or "").lower(), reverse=not asc)
 
             arrow = "↑" if asc else "↓"
             for col, base in self.preview_headings.items():
                 label = base + (f" {arrow}" if col == sort_col else "")
-                cmd = (lambda c=col: self._sort_preview(c)) if col in {"discount", "cost", "price"} else None
+                cmd = (lambda c=col: self._sort_preview(c)) if col in {"discount", "cost", "price", "name"} else None
                 if cmd:
                     self.preview_tree.heading(col, text=label, command=cmd)
                 else:
@@ -2360,6 +2389,8 @@ class PageConfig(ttk.Frame):
                 p_txt = f"{p*100:.4f}%" if p > 0 else "-"
                 self.preview_tree.insert("", "end", values=(
                     it.name,
+                    it.version or "-",
+                    it.stock_type or "通用",
                     it.stock,
                     f"{it.price:.2f}",
                     f"{it.steam_lowest:.2f}",
@@ -2494,28 +2525,30 @@ class PagePick(ttk.Frame):
         self.app.apply_placeholder(ent, self.v_search, "搜索 ID/名称")
         ent.bind("<KeyRelease>", lambda e: self.refresh())
 
-        # 上层：已选择商品区（独立分页）
+        # 上层：已选择商品区（滚动浏览，无分页）
         selected_box = ttk.Labelframe(self, text="已选择商品", padding=8)
         selected_box.pack(fill="both", expand=True, pady=(6, 6))
 
         sel_cols = [
-            ("checked", "选择", 60, "center"),
+            ("action", "操作", 80, "center"),
             ("id", "ID", 70, "center"),
-            ("name", "游戏名", 240, "w"),
-            ("level", "等级", 90, "center"),
-            ("stock", "库存", 90, "center"),
+            ("name", "游戏名", 200, "w"),
+            ("version", "版本", 90, "center"),
+            ("stock_type", "库存类型", 90, "center"),
+            ("level", "等级", 80, "center"),
+            ("stock", "库存", 80, "center"),
             ("price", "售价", 90, "e"),
             ("steam_low", "Steam史低", 100, "e"),
             ("cost", "成本", 90, "e"),
             ("disc", "折扣活动状态", 150, "center"),
-            ("src", "来源", 90, "center"),
+            ("src", "来源", 80, "center"),
         ]
         self.sel_heading_labels = {c: t for c, t, *_ in sel_cols}
 
-        self.tree_selected = ttk.Treeview(selected_box, columns=[c for c, *_ in sel_cols], show="headings", height=7)
+        self.tree_selected = ttk.Treeview(selected_box, columns=[c for c, *_ in sel_cols], show="headings", height=9)
         for c, t, w, a in sel_cols:
             cmd = None
-            if c in ("price", "cost", "disc"):
+            if c in ("name", "price", "cost", "disc"):
                 cmd = lambda col=c: self._toggle_sort("sel", col)
             if cmd:
                 self.tree_selected.heading(c, text=t, command=cmd)
@@ -2525,25 +2558,16 @@ class PagePick(ttk.Frame):
         self.tree_selected.pack(fill="both", expand=True)
         self.tree_selected.bind("<Button-1>", self.on_click_selected)
 
-        sel_pg = ttk.Frame(selected_box, padding=(0, 6))
-        sel_pg.pack(fill="x")
-        self.sel_info = ttk.Label(sel_pg, text="", foreground="#6b7280")
-        self.sel_info.pack(side="left")
-        ttk.Label(sel_pg, text="每页：").pack(side="right")
-        cb_sel_size = ttk.Combobox(sel_pg, textvariable=self.sel_page_size, values=["10", "20", "50"], width=4, state="readonly")
-        cb_sel_size.pack(side="right", padx=(0, 8))
-        cb_sel_size.bind("<<ComboboxSelected>>", lambda e: self._change_sel_size())
-        ttk.Button(sel_pg, text="下一页", command=lambda: self._turn_page("sel", 1)).pack(side="right", padx=4)
-        ttk.Button(sel_pg, text="上一页", command=lambda: self._turn_page("sel", -1)).pack(side="right")
-
         # 下层：候选商品区（独立分页）
         cand_box = ttk.Labelframe(self, text="候选商品", padding=8)
         cand_box.pack(fill="both", expand=True, pady=(6, 6))
 
         cand_cols = [
-            ("checked", "选择", 60, "center"),
+            ("action", "操作", 80, "center"),
             ("id", "ID", 70, "center"),
-            ("name", "游戏名", 230, "w"),
+            ("name", "游戏名", 200, "w"),
+            ("version", "版本", 90, "center"),
+            ("stock_type", "库存类型", 90, "center"),
             ("level", "等级", 90, "center"),
             ("stock", "库存", 90, "center"),
             ("price", "售价", 90, "e"),
@@ -2558,7 +2582,7 @@ class PagePick(ttk.Frame):
         self.tree = ttk.Treeview(cand_box, columns=[c for c, *_ in cand_cols], show="headings", height=10)
         for c, t, w, a in cand_cols:
             cmd = None
-            if c in ("price", "cost", "disc"):
+            if c in ("name", "price", "cost", "disc"):
                 cmd = lambda col=c: self._toggle_sort("cand", col)
             if cmd:
                 self.tree.heading(c, text=t, command=cmd)
@@ -2649,13 +2673,13 @@ class PagePick(ttk.Frame):
             return (0, it.discount_end)
         return (1, dt.datetime.max)
 
-    def _apply_sort(self, which: str, items: List[Item], now: dt.datetime) -> List[Item]:
+    def _apply_sort(self, which: str, items: List[Item], now: dt.datetime, bag: BagState) -> List[Item]:
         key = self.sel_sort_key if which == "sel" else self.cand_sort_key
         desc = self.sel_sort_desc if which == "sel" else self.cand_sort_desc
-        if not key:
-            return items
 
-        def _k(it: Item):
+        def base(it: Item):
+            if key == "name":
+                return (it.name or "").lower()
             if key == "price":
                 return it.price
             if key == "cost":
@@ -2664,7 +2688,19 @@ class PagePick(ttk.Frame):
                 return self._disc_sort_key(it, now)
             return 0
 
-        return sorted(items, key=_k, reverse=desc)
+        def cmp(a: Item, b: Item):
+            oa = bag.action_order.get(a.id, 0)
+            ob = bag.action_order.get(b.id, 0)
+            if oa != ob:
+                return -1 if oa > ob else 1
+            ba, bb = base(a), base(b)
+            if ba == bb:
+                return (a.id > b.id) - (a.id < b.id)
+            if desc:
+                return -1 if ba > bb else 1
+            return -1 if ba < bb else 1
+
+        return sorted(items, key=cmp_to_key(cmp))
 
     def _refresh_sort_indicators(self):
         def _apply(tree, labels, key, desc, sortable):
@@ -2677,8 +2713,8 @@ class PagePick(ttk.Frame):
                         text = f"{base} ⇅"
                 tree.heading(col, text=text)
 
-        _apply(self.tree_selected, self.sel_heading_labels, self.sel_sort_key, self.sel_sort_desc, {"price", "cost", "disc"})
-        _apply(self.tree, self.cand_heading_labels, self.cand_sort_key, self.cand_sort_desc, {"price", "cost", "disc"})
+        _apply(self.tree_selected, self.sel_heading_labels, self.sel_sort_key, self.sel_sort_desc, {"name", "price", "cost", "disc"})
+        _apply(self.tree, self.cand_heading_labels, self.cand_sort_key, self.cand_sort_desc, {"name", "price", "cost", "disc"})
 
     def _matches(self, it: Item) -> bool:
         if not self.level_vars.get(it.level, tk.BooleanVar(value=True)).get():
@@ -2701,23 +2737,16 @@ class PagePick(ttk.Frame):
 
         # 已选列表（受搜索/等级/库存筛选影响）
         selected_items = [it for it in self.app.catalog if it.id in bag.selected_ids and self._matches(it)]
-        selected_items = self._apply_sort("sel", selected_items, now)
-        sel_size = max(1, int(self.sel_page_size.get() or 10))
-        sel_slice, sel_total, sel_pages, self.sel_page = self._paginate(selected_items, self.sel_page, sel_size)
+        selected_items = self._apply_sort("sel", selected_items, now, bag)
 
         self.tree_selected.delete(*self.tree_selected.get_children())
-        sel_rows = []
-        for it in sel_slice:
+        for it in selected_items:
             stock = f"{it.stock}" if self._is_low_stock(it) else str(it.stock)
             disc = self._disc_text(it, now)
             src = "手动添加" if it.id in bag.manual_added_ids else "系统筛选"
-            sel_rows.append(("☑️", it.id, it.name, LEVEL_BADGE[it.level], stock, it.price, it.steam_lowest, it.cost, disc, src))
-
-        for checked, it_id, name, lvl, stock, price, steam_low, cost, disc, src in sel_rows:
-            self.tree_selected.insert("", "end", iid=str(it_id),
-                                      values=(checked, it_id, name, lvl, stock, f"{price:.2f}", f"{steam_low:.2f}", f"{cost:.2f}", disc, src))
-
-        self.sel_info.configure(text=f"共 {sel_total} 条，{sel_pages} 页，当前第 {self.sel_page} 页")
+            self.tree_selected.insert("", "end", iid=str(it.id),
+                                      values=("移除", it.id, it.name, it.version or "-", it.stock_type or "通用", LEVEL_BADGE[it.level],
+                                              stock, f"{it.price:.2f}", f"{it.steam_lowest:.2f}", f"{it.cost:.2f}", disc, src))
 
         # 候选列表（系统筛选 + 手动添加），系统筛选的过期商品不再展示，避免“全选后立即被剔除”
         shown = []
@@ -2739,25 +2768,18 @@ class PagePick(ttk.Frame):
             if self._matches(it) and it not in shown:
                 shown.append(it)
 
-        shown = self._apply_sort("cand", shown, now)
+        shown = self._apply_sort("cand", shown, now, bag)
         cand_size = max(1, int(self.cand_page_size.get() or 10))
         cand_slice, cand_total, cand_pages, self.cand_page = self._paginate(shown, self.cand_page, cand_size)
 
         self.tree.delete(*self.tree.get_children())
-        cand_rows = []
         for it in cand_slice:
-            checked = "☑️" if it.id in bag.selected_ids else "☐"
             stock = f"{it.stock}" if self._is_low_stock(it) else str(it.stock)
-
             disc = self._disc_text(it, now)
-
             src = "手动添加" if it.id in bag.manual_added_ids else "系统筛选"
-
-            cand_rows.append((checked, it.id, it.name, LEVEL_BADGE[it.level], stock, it.price, it.steam_lowest, it.cost, it.alarm, disc, src))
-
-        for checked, it_id, name, lvl, stock, price, steam_low, cost, alarm, disc, src in cand_rows:
-            self.tree.insert("", "end", iid=str(it_id),
-                             values=(checked, it_id, name, lvl, stock, f"{price:.2f}", f"{steam_low:.2f}", f"{cost:.2f}", str(alarm), disc, src))
+            self.tree.insert("", "end", iid=str(it.id),
+                             values=("选择", it.id, it.name, it.version or "-", it.stock_type or "通用", LEVEL_BADGE[it.level], stock,
+                                     f"{it.price:.2f}", f"{it.steam_lowest:.2f}", f"{it.cost:.2f}", str(it.alarm), disc, src))
 
         self.cand_info.configure(text=f"共 {cand_total} 条，{cand_pages} 页，当前第 {self.cand_page} 页")
         self.status.configure(text=f"候选显示：{len(cand_slice)} / {cand_total}｜已勾选：{len(bag.selected_ids)}（系统筛选商品折扣结束会自动剔除，手动添加不受影响）")
@@ -2789,7 +2811,8 @@ class PagePick(ttk.Frame):
 
     def on_click_selected(self, event):
         row = self.tree_selected.identify_row(event.y)
-        if not row:
+        col = self.tree_selected.identify_column(event.x)
+        if not row or col != "#1":
             return
         bag = self.app.ensure_current()
         it_id = int(row)
@@ -2797,12 +2820,15 @@ class PagePick(ttk.Frame):
             bag.selected_ids.remove(it_id)
             if it_id in bag.manual_added_ids:
                 bag.manual_added_ids.remove(it_id)
+        bag.action_counter += 1
+        bag.action_order[it_id] = bag.action_counter
         bag.config_confirmed = False
         self.refresh()
 
     def on_click_candidate(self, event):
         row = self.tree.identify_row(event.y)
-        if not row:
+        col = self.tree.identify_column(event.x)
+        if not row or col != "#1":
             return
         bag = self.app.ensure_current()
         it_id = int(row)
@@ -2810,13 +2836,15 @@ class PagePick(ttk.Frame):
             bag.selected_ids.remove(it_id)
         else:
             bag.selected_ids.add(it_id)
+        bag.action_counter += 1
+        bag.action_order[it_id] = bag.action_counter
         bag.config_confirmed = False
         self.refresh()
 
     def on_double_click_alarm(self, event):
         row = self.tree.identify_row(event.y)
         col = self.tree.identify_column(event.x)
-        if not row or col != "#9":
+        if not row or col != "#11":
             return
         bag = self.app.ensure_current()
         it_id = int(row)
@@ -2870,7 +2898,11 @@ class PagePick(ttk.Frame):
                 if self._matches(it):
                     candidates.append(it)
 
-        bag.selected_ids |= {it.id for it in candidates}
+        for it in candidates:
+            if it.id not in bag.selected_ids:
+                bag.selected_ids.add(it.id)
+                bag.action_counter += 1
+                bag.action_order[it.id] = bag.action_counter
         bag.config_confirmed = False
         self.refresh()
 
@@ -3051,6 +3083,8 @@ class PageResult(ttk.Frame):
             bag.selected_ids.remove(it_id)
             if it_id in bag.manual_added_ids:
                 bag.manual_added_ids.remove(it_id)
+        bag.action_counter += 1
+        bag.action_order[it_id] = bag.action_counter
         # 移除后自动重新计算
         bag.calc_ok = False
         bag.adapt_triggered = False
