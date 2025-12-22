@@ -2509,7 +2509,8 @@ class PagePick(ttk.Frame):
 
         # 上层：已选择商品区（滚动浏览，无分页，可拖拽调整高度）
         selected_box = ttk.Labelframe(paned, text="已选择商品", padding=8)
-        paned.add(selected_box, weight=1, minsize=160)
+        paned.add(selected_box, weight=1)
+        paned.paneconfigure(selected_box, minsize=160)
 
         sel_cols = [
             ("action", "操作", 80, "center"),
@@ -2542,7 +2543,8 @@ class PagePick(ttk.Frame):
 
         # 下层：候选商品区（独立分页，可拖拽调整高度）
         cand_box = ttk.Labelframe(paned, text="候选商品", padding=8)
-        paned.add(cand_box, weight=2, minsize=200)
+        paned.add(cand_box, weight=2)
+        paned.paneconfigure(cand_box, minsize=200)
 
         cand_cols = [
             ("action", "操作", 80, "center"),
