@@ -92,7 +92,7 @@ class Item:
 @dataclass
 class BagState:
     bag_id: str
-    status: str = "未上线"  # 未上线 / 已上线 / 已下架
+    status: str = "未上线"  # 仅允许：未上线 / 已上线
     cfg: Optional[Config] = None
     bag_type: str = "原福袋"
     recommended: bool = False
@@ -440,11 +440,6 @@ class App(tk.Tk):
             'reminder_person': '默认运营',
             'reminder_phone': '13800000000',
             'reminder_list': [],
-            'notify_enabled': True,
-            'notify_supervisor_on_force': True,
-            'is_super_admin': False,
-            'supervisor_name': '上级运营',
-            'supervisor_phone': '13900000000',
         }
         self.current_bag_id: Optional[str] = None
 
@@ -514,6 +509,25 @@ class App(tk.Tk):
         P_eff = calc_p_eff(cfg.P, cfg.d, cfg.q)
         ec = expected_cost_total(cfg, selected, probs)
         return P_eff - ec
+
+    def can_go_online(self, bag: BagState) -> Tuple[bool, str]:
+        if not bag.cfg:
+            return False, "缺少配置，无法上线。"
+        if not bag.selected_ids:
+            return False, "缺少已选商品，无法上线。"
+        if not bag.final_probs:
+            return False, "缺少最终概率，请先完成计算。"
+        return True, ""
+
+    def set_online(self, bag: BagState, online: bool) -> Tuple[bool, str]:
+        if online:
+            ok, msg = self.can_go_online(bag)
+            if not ok:
+                return False, msg
+            bag.status = "已上线"
+            return True, ""
+        bag.status = "未上线"
+        return True, ""
 
     def build_config_snapshot(self, bag: BagState) -> str:
         cfg = bag.cfg
@@ -660,7 +674,7 @@ class App(tk.Tk):
         for bag in self.bags.values():
             if bag.cfg and bag.status == "已上线":
                 if now >= bag.cfg.down_time:
-                    bag.status = "已下架"
+                    bag.status = "未上线"
 
     def _items_expiring_by_tomorrow_23(self) -> List[Item]:
         now = dt.datetime.now()
@@ -1136,7 +1150,7 @@ class ReminderEditDialog(tk.Toplevel):
         self.destroy()
 
 class ConfigPopup(tk.Toplevel):
-    """参数配置页弹窗（只读），内含上线/强制上线操作。"""
+    """参数配置页弹窗（只读），内含上线操作。"""
     def __init__(self, parent: tk.Tk, app: App, bag: BagState, on_state_change=None):
         super().__init__(parent)
         self.app = app
@@ -1250,10 +1264,6 @@ class ConfigPopup(tk.Toplevel):
         self.note.pack(side="left")
         self.btn_online = ttk.Button(btns, text="确认上线", command=self._online)
         self.btn_online.pack(side="right")
-        self.btn_force = ttk.Button(btns, text="强制上线", command=self._force_online)
-        self.btn_force.pack(side="right", padx=8)
-        self.force_hint = ttk.Label(btns, text="仅超级管理员可进行强制上线", foreground="#6b7280")
-        self.force_hint.pack(side="right", padx=(0, 10))
 
         self._refresh_level_view()
         self._update_action_state()
@@ -1295,30 +1305,13 @@ class ConfigPopup(tk.Toplevel):
     def _update_action_state(self):
         bag = self.bag
         cfg = bag.cfg
-        selected = [it for it in self.app.catalog if it.id in bag.selected_ids]
-        probs = bag.final_probs or {}
-        profit_val = self.app._profit_value(cfg, selected, probs)
-
-        super_admin = bool(self.app.settings.get('is_super_admin', False))
-
-        if not probs or not selected or profit_val is None:
-            self.btn_online.configure(state="disabled")
-            self.btn_force.configure(state="disabled")
-            self.note.configure(text="缺少最终概率或选品结果，需先计算。")
-            return
-
-        if profit_val >= -1e-12:
+        ok, msg = self.app.can_go_online(bag)
+        if ok:
             self.btn_online.configure(state="normal")
-            self.btn_force.configure(state="disabled")
-            self.note.configure(text="预测利润为非负：可直接上线，无需强制上线。")
+            self.note.configure(text="满足上线条件，可直接上线。")
         else:
             self.btn_online.configure(state="disabled")
-            if super_admin:
-                self.btn_force.configure(state="normal")
-                self.note.configure(text="预测利润为负：仅超级管理员可强制上线并记录审批。")
-            else:
-                self.btn_force.configure(state="disabled")
-                self.note.configure(text="预测利润为负：普通运营不可上线，请联系超管处理。")
+            self.note.configure(text=msg or "缺少最终概率或选品结果，需先计算。")
 
     def _online(self):
         bag = self.bag
@@ -1326,38 +1319,11 @@ class ConfigPopup(tk.Toplevel):
         selected = [it for it in self.app.catalog if it.id in bag.selected_ids]
         probs = bag.final_probs or {}
         profit_val = self.app._profit_value(cfg, selected, probs)
-        if profit_val is None:
-            messagebox.showwarning("不允许上线", "缺少最终概率或选品结果，无法上线。")
+        ok, msg = self.app.set_online(bag, True)
+        if not ok:
+            messagebox.showwarning("不允许上线", msg)
             return
-        if profit_val < -1e-12:
-            messagebox.showwarning("不允许上线", "预测利润为负，需超级管理员执行强制上线。")
-            return
-        bag.status = "已上线"
         messagebox.showinfo("上线成功", "上线成功！已返回福袋列表。")
-        if self.on_state_change:
-            self.on_state_change()
-        self.destroy()
-
-    def _force_online(self):
-        bag = self.bag
-        super_admin = bool(self.app.settings.get('is_super_admin', False))
-        if not super_admin:
-            messagebox.showwarning("权限不足", "仅超级管理员可在预测利润为负时强制上线。")
-            return
-        if not bag.final_probs or not bag.selected_ids:
-            messagebox.showwarning("需要先计算", "请先完成计算并生成最终概率。")
-            return
-        profit_val = self.app._profit_value(bag.cfg, [it for it in self.app.catalog if it.id in bag.selected_ids], bag.final_probs)
-        if profit_val is None:
-            messagebox.showwarning("需要先计算", "缺少预测利润，无法强制上线。")
-            return
-        if profit_val >= -1e-12:
-            messagebox.showinfo("建议直接上线", "预测利润为非负，可直接上线，无需强制流程。")
-            return
-        sup_name = str(self.app.settings.get('supervisor_name', '上级运营'))
-        sup_phone = str(self.app.settings.get('supervisor_phone', ''))
-        messagebox.showinfo("已通知上级", f"已发起强制上线申请，将通知 {sup_name}（{sup_phone}）审批（占位交互）。")
-        bag.status = "待审批"
         if self.on_state_change:
             self.on_state_change()
         self.destroy()
@@ -1391,7 +1357,7 @@ class PageBagList(ttk.Frame):
 
         ttk.Label(filt, text="上下线状态：").pack(side="left", padx=(12, 4))
         self.v_status = tk.StringVar(value="请选择")
-        cb_status = ttk.Combobox(filt, textvariable=self.v_status, values=["请选择", "开启", "关闭"], width=10, state="readonly")
+        cb_status = ttk.Combobox(filt, textvariable=self.v_status, values=["请选择", "未上线", "已上线"], width=10, state="readonly")
         cb_status.pack(side="left")
 
         ttk.Label(filt, text="是否推荐：").pack(side="left", padx=(12, 4))
@@ -1465,12 +1431,8 @@ class PageBagList(ttk.Frame):
             return False
 
         status_v = self.v_status.get()
-        if status_v != "请选择":
-            is_open = (bag.status == "已上线")
-            if status_v == "开启" and not is_open:
-                return False
-            if status_v == "关闭" and is_open:
-                return False
+        if status_v != "请选择" and bag.status != status_v:
+            return False
 
         rec_v = self.v_rec.get()
         if rec_v != "请选择":
@@ -1519,7 +1481,7 @@ class PageBagList(ttk.Frame):
             profit_val = revenue - cost
             prate = (profit_val / revenue * 100.0) if revenue > 1e-9 else None
 
-            status = "开启" if bag.status == "已上线" else "关闭"
+            status = bag.status
             count = len(bag.selected_ids) if bag.selected_ids else 0
             ops_txt = "修改｜" + ("取消推荐" if bag.recommended else "推荐") + "｜详情｜" + ("下线" if bag.status == "已上线" else "上线") + "｜删除"
 
@@ -1587,30 +1549,15 @@ class PageBagList(ttk.Frame):
         if not bag.cfg:
             messagebox.showwarning("缺少配置", "请先完成参数配置后再上线或下线。")
             return
-        current = bag.status
-        if current == "已上线":
-            bag.status = "已下架"
+        if bag.status == "已上线":
+            self.app.set_online(bag, False)
             messagebox.showinfo("已下线", "已手动下线该福袋，立即生效，与时间配置无关。")
         else:
-            if not bag.final_probs or not bag.selected_ids:
-                messagebox.showwarning("禁止上线", "缺少最终概率或选品结果，请先完成选品与计算。")
+            ok, msg = self.app.set_online(bag, True)
+            if not ok:
+                messagebox.showwarning("禁止上线", msg)
                 return
-            profit_val = self.app._profit_value(bag.cfg, [it for it in self.app.catalog if it.id in bag.selected_ids], bag.final_probs)
-            if profit_val is None:
-                messagebox.showwarning("禁止上线", "缺少预测利润，无法判断上线风险。")
-                return
-            if profit_val < -1e-12:
-                if not self.app.settings.get('is_super_admin', False):
-                    messagebox.showwarning("需超管操作", "预测利润为负，普通运营不可上线，请联系超级管理员强制上线。")
-                    return
-                if self.app.settings.get('notify_supervisor_on_force', True) and self.app.settings.get('notify_enabled', True):
-                    messagebox.showinfo("已通知上级", "预测利润为负，已记录强制上线并通知上级审批（占位交互）。")
-                else:
-                    messagebox.showinfo("已记录", "预测利润为负，已记录强制上线申请（占位交互）。")
-                bag.status = "待审批"
-            else:
-                bag.status = "已上线"
-                messagebox.showinfo("已上线", "已手动上线该福袋，立即生效，与时间配置无关。")
+            messagebox.showinfo("已上线", "已手动上线该福袋，立即生效，与时间配置无关。")
         self.refresh()
 
     def _show_detail(self, bag_id: str):
@@ -1636,7 +1583,7 @@ class PageBagList(ttk.Frame):
             f"成本：{cost:.2f}",
             f"利润：{profit_val:.2f}",
             f"利润率：{prate:.2f}%" if prate is not None else "利润率：—",
-            f"状态：{'开启' if bag.status == '已上线' else '关闭'}",
+            f"状态：{bag.status}",
             f"商品个数：{len(bag.selected_ids) if bag.selected_ids else 0}",
         ]
         lbl = tk.Text(win, wrap="word", height=10)
@@ -3082,7 +3029,7 @@ class PageResult(ttk.Frame):
                 note_msg = "预测利润为非负：可在「查看当前配置」中直接上线。"
             else:
                 self.banner.configure(bg="#8a1c1c", fg="white", text=f"⚠️ 预测利润为负：{profit_val:.2f} 元（利润率 {profit_rate * 100:.2f}%）")
-                note_msg = "预测利润为负：普通运营不可上线，仅可请超管在弹窗中强制上线。"
+                note_msg = "预测利润为负：请谨慎上线。"
         if pruned:
             note_msg = (note_msg + "｜" if note_msg else "") + "部分商品因库存为 0 或折扣到期已自动剔除，已触发 β 自适应重算"
             if not bag.selected_ids:
@@ -3116,44 +3063,11 @@ class PageResult(ttk.Frame):
 
     def online(self):
         bag = self.app.ensure_current()
-        if not bag.final_probs or not bag.selected_ids:
-            messagebox.showwarning("禁止上线", "缺少最终概率或选品结果，请返回选品页计算后再上线。")
+        ok, msg = self.app.set_online(bag, True)
+        if not ok:
+            messagebox.showwarning("禁止上线", msg)
             return
-        profit_val = self.app._profit_value(bag.cfg, [it for it in self.app.catalog if it.id in bag.selected_ids], bag.final_probs)
-        if profit_val is None:
-            messagebox.showwarning("禁止上线", "缺少预测利润，无法上线。")
-            return
-        if profit_val < -1e-12:
-            messagebox.showwarning("禁止上线", "预测利润为负，仅超级管理员可强制上线。")
-            return
-        # 上线：状态更新，回列表
-        bag.status = "已上线"
         messagebox.showinfo("上线成功", " 上线成功！已返回福袋列表。")
-        self.app.show("PageBagList")
-
-    def force_online(self):
-        bag = self.app.ensure_current()
-        super_admin = bool(self.app.settings.get('is_super_admin', False))
-        if not super_admin:
-            messagebox.showwarning("权限不足", "仅超级管理员可在预测利润为负时强制上线。")
-            return
-        if not bag.final_probs or not bag.selected_ids:
-            messagebox.showwarning("需要先计算", "请先在选品页完成计算并生成最终概率。")
-            return
-        profit_val = self.app._profit_value(bag.cfg, [it for it in self.app.catalog if it.id in bag.selected_ids], bag.final_probs)
-        if profit_val is None:
-            messagebox.showwarning("需要先计算", "缺少预测利润，无法强制上线。")
-            return
-        if profit_val >= -1e-12:
-            messagebox.showinfo("建议直接上线", "预测利润为非负，可直接上线，无需强制流程。")
-            return
-
-        if self.app.settings.get('notify_supervisor_on_force', True) and self.app.settings.get('notify_enabled', True):
-            messagebox.showinfo("已通知上级", "预测利润为负，已发起强制上线申请并通知上级审批（占位交互）。")
-        else:
-            messagebox.showinfo("已记录", "预测利润为负，已记录强制上线申请（占位交互）。")
-
-        bag.status = "待审批"
         self.app.show("PageBagList")
 
     def show_config_snapshot(self):
@@ -3166,7 +3080,7 @@ class PageResult(ttk.Frame):
         ConfigPopup(self, self.app, bag, on_state_change=self.on_state_change)
 
     def on_state_change(self):
-        if self.app.ensure_current().status in ("已上线", "待审批"):
+        if self.app.ensure_current().status == "已上线":
             self.app.show("PageBagList")
         else:
             self.on_show()
