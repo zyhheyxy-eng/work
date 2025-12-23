@@ -41,6 +41,8 @@ DEFAULT_ALARM = 50
 # 内部“等级价值系数”（用于生成预期成本参考，不展示给运营）
 _ALPHA = {"L": 3.0, "E": 2.0, "R": 1.5, "U": 1.2, "C": 1.0}
 PRESET_NOTIFY_PERSONS = ["当前操作人", "运营A", "运营B", "超管"]
+STOCK_NOTIFY_PERSON = "库存提醒人"
+STOCK_NOTIFY_PHONE = "13800000000"
 
 # -------------------------------
 # 数据结构
@@ -122,7 +124,6 @@ class BagState:
     final_probs: Dict[int, float] = None
     config_confirmed: bool = False
     last_profit_neg_notify_at: Optional[dt.datetime] = None
-    last_low_stock_sms_date: Optional[dt.date] = None
 
     def __post_init__(self):
         if self.filtered is None: self.filtered = []
@@ -435,6 +436,7 @@ class App(tk.Tk):
 
         self.catalog: List[Item] = load_catalog_from_backend()
         self._catalog_snapshot: Dict[int, Tuple[int, bool]] = self._build_catalog_snapshot()
+        self.last_global_low_stock_sms_date: Optional[dt.date] = None
 
         # 多福袋
         self.bags: Dict[str, BagState] = {}
@@ -709,7 +711,7 @@ class App(tk.Tk):
             if changed:
                 for bag in self.bags.values():
                     self.prune_and_recalc(bag)
-            self._check_low_stock_sms()
+            self._check_global_low_stock_sms()
         finally:
             self.after(60_000, self._tick_minutely)
 
@@ -720,28 +722,30 @@ class App(tk.Tk):
                 if now >= bag.cfg.down_time:
                     bag.status = "未上线"
 
-    def _check_low_stock_sms(self):
+    def _check_global_low_stock_sms(self):
         now = dt.datetime.now()
         if not (now.hour == 16 and now.minute == 0):
             return
-        for bag in self.bags.values():
-            if bag.status != "已上线" or not bag.cfg:
-                continue
-            if bag.last_low_stock_sms_date == now.date():
-                continue
-            selected = [it for it in self.catalog if it.id in bag.selected_ids]
-            low = [it for it in selected if it.stock < 100]
-            if not low:
-                continue
-            bag.last_low_stock_sms_date = now.date()
-            names = ", ".join([f"{it.name}({it.stock})" for it in low[:20]])
-            msg = (
-                f"福袋：{bag.bag_id}｜{bag.cfg.bag_name}\n"
-                f"低库存商品：{len(low)} 个（阈值<100）\n"
-                f"示例：{names}\n"
-                f"时间：{now:%Y-%m-%d %H:%M}"
-            )
-            self._send_sms(getattr(bag.cfg, "notify_phone", ""), msg)
+        if self.last_global_low_stock_sms_date == now.date():
+            return
+        low = [it for it in self.catalog if it.stock < 100]
+        if not low:
+            return
+        self.last_global_low_stock_sms_date = now.date()
+        low_sorted = sorted(low, key=lambda x: x.stock)
+        names = ", ".join([f"{it.name}({it.stock})" for it in low_sorted[:20]])
+        msg = (
+            "【商品低库存预警】\n"
+            f"低库存商品：{len(low)} 个（阈值<100）\n"
+            f"示例：{names}\n"
+            f"时间：{now:%Y-%m-%d %H:%M}\n"
+            f"通知人：{STOCK_NOTIFY_PERSON}"
+        )
+        try:
+            messagebox.showwarning("商品低库存预警", msg)
+        except Exception:
+            pass
+        self._send_sms(STOCK_NOTIFY_PHONE, msg)
 
     def reset_downstream(self, bag: BagState, keep_config: bool = True):
         bag.filtered = []
