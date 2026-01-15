@@ -109,6 +109,7 @@ class BagState:
     ad_path: str = ""
     distribution: str = ""
     remark: str = ""
+    financial_loaded: bool = False
 
     # 选品相关
     filtered: List[Item] = None
@@ -160,16 +161,6 @@ def calc_p_eff(P: float, d: float, q: float) -> float:
 
 def calc_c_target(P_eff: float, g: float) -> float:
     return P_eff * (1.0 - g)
-
-def normalize_pk_percent(pk_percent: Dict[str, float]) -> Dict[str, float]:
-    keys = ["L", "E", "R", "U", "C"]
-    vals = [max(0.0, float(pk_percent.get(k, 0.0))) for k in keys]
-    total = sum(vals)
-    diff = 100.0 - total
-    vals[-1] += diff
-    if vals[-1] < 0:
-        raise ValueError("等级概率总和超过 100%，请调小前四项。")
-    return {k: v / 100.0 for k, v in zip(keys, vals)}
 
 def expected_cost_reference(cfg: Config) -> Dict[str, float]:
     P_eff = calc_p_eff(cfg.P, cfg.d, cfg.q)
@@ -505,6 +496,9 @@ class App(tk.Tk):
         P_eff = calc_p_eff(cfg.P, cfg.d, cfg.q)
         ec = expected_cost_total(cfg, selected, probs)
         return P_eff - ec
+
+    def load_bag_financials(self, bag: BagState) -> None:
+        bag.financial_loaded = True
 
     def _send_sms(self, phone: str, msg: str) -> None:
         if not phone:
@@ -1241,11 +1235,14 @@ class PageBagList(ttk.Frame):
             btype = bag.bag_type or "原福袋"
             price = f"{bag.cfg.P:.2f}" if bag.cfg else "—"
 
-            revenue = bag.revenue or 0.0
-            orders = bag.orders or 0
-            cost = bag.total_cost or 0.0
-            profit_val = revenue - cost
-            prate = (profit_val / revenue * 100.0) if revenue > 1e-9 else None
+            if bag.financial_loaded:
+                revenue = bag.revenue or 0.0
+                orders = bag.orders or 0
+                cost = bag.total_cost or 0.0
+                profit_val = revenue - cost
+                prate = (profit_val / revenue * 100.0) if revenue > 1e-9 else None
+            else:
+                revenue = orders = cost = profit_val = prate = "—"
 
             status = bag.status
             count = len(bag.selected_ids) if bag.selected_ids else 0
@@ -1256,11 +1253,11 @@ class PageBagList(ttk.Frame):
                 name,
                 btype,
                 price,
-                f"{revenue:.2f}",
-                str(orders),
-                f"{cost:.2f}",
-                f"{profit_val:.2f}",
-                (f"{prate:.2f}%" if prate is not None else "—"),
+                (f"{revenue:.2f}" if isinstance(revenue, (int, float)) else "—"),
+                (str(orders) if isinstance(orders, (int, float)) else "—"),
+                (f"{cost:.2f}" if isinstance(cost, (int, float)) else "—"),
+                (f"{profit_val:.2f}" if isinstance(profit_val, (int, float)) else "—"),
+                (f"{prate:.2f}%" if isinstance(prate, (int, float)) else "—"),
                 status,
                 str(count),
                 ops_txt,
@@ -1330,6 +1327,8 @@ class PageBagList(ttk.Frame):
         bag = self.app.bags.get(bag_id)
         if not bag:
             return
+        self.app.load_bag_financials(bag)
+        self.refresh()
         win = tk.Toplevel(self)
         win.title(f"{bag_id} 详情")
         win.geometry("420x280")
@@ -1410,7 +1409,9 @@ class PageMonthlyBag(ttk.Frame):
 
         tab_bar = ttk.Frame(preview)
         tab_bar.pack(anchor="w", pady=(0, 6))
-        self.preview_level = tk.StringVar(value="L")
+        self.preview_level = tk.StringVar(value="全部")
+        ttk.Radiobutton(tab_bar, text="全部", value="全部", variable=self.preview_level,
+                        command=self.refresh_preview).pack(side="left", padx=(0, 8))
         for lvl in LEVELS:
             ttk.Radiobutton(tab_bar, text=LEVEL_NAME[lvl], value=lvl, variable=self.preview_level,
                             command=self.refresh_preview).pack(side="left", padx=(0, 8))
@@ -1431,6 +1432,7 @@ class PageMonthlyBag(ttk.Frame):
             self.tree_preview.heading(c, text=t)
             self.tree_preview.column(c, width=w, anchor=a)
         self.tree_preview.pack(fill="both", expand=True)
+        self.tree_preview.bind("<Double-1>", self._edit_preview_item)
 
         self.lbl_hint = ttk.Label(preview, text="请先导入。", foreground="#6b7280")
         self.lbl_hint.pack(anchor="w", pady=(4, 0))
@@ -1649,9 +1651,10 @@ class PageMonthlyBag(ttk.Frame):
             self.lbl_hint.configure(text="请先导入。")
             return
         lvl = self.preview_level.get()
-        rows = [it for it in items if it.level == lvl]
+        rows = items if lvl == "全部" else [it for it in items if it.level == lvl]
         if not rows:
-            self.lbl_hint.configure(text=f"{LEVEL_NAME.get(lvl, lvl)} 暂无导入商品。")
+            label = "全部" if lvl == "全部" else LEVEL_NAME.get(lvl, lvl)
+            self.lbl_hint.configure(text=f"{label} 暂无导入商品。")
             return
         now = dt.datetime.now()
         rows.sort(key=lambda x: x.id)
@@ -1665,6 +1668,66 @@ class PageMonthlyBag(ttk.Frame):
             self.tree_preview.insert("", "end", values=(it.id, it.name, LEVEL_BADGE[it.level], it.stock,
                                                           f"{it.price:.2f}", f"{it.cost:.2f}", f"{it.steam_lowest:.2f}", disc, src))
         self.lbl_hint.configure(text=f"当前等级展示 {len(rows)} 条。")
+
+    def _edit_preview_item(self, event):
+        row = self.tree_preview.identify_row(event.y)
+        if not row:
+            return
+        values = self.tree_preview.item(row, "values")
+        if not values:
+            return
+        try:
+            item_id = int(values[0])
+        except Exception:
+            return
+        it = next((x for x in self.app.monthly_bag.items if x.id == item_id), None)
+        if not it:
+            return
+
+        win = tk.Toplevel(self)
+        win.title("编辑导入商品")
+        win.geometry("420x360")
+        win.resizable(False, False)
+
+        def row_input(label: str, value: str):
+            r = ttk.Frame(win, padding=(12, 6))
+            r.pack(fill="x")
+            ttk.Label(r, text=label, width=12).pack(side="left")
+            v = tk.StringVar(value=value)
+            ttk.Entry(r, textvariable=v, width=24).pack(side="left")
+            return v
+
+        v_name = row_input("游戏名", it.name)
+        v_price = row_input("售价", f"{it.price:.2f}")
+        v_cost = row_input("成本", f"{it.cost:.2f}")
+        v_stock = row_input("库存", str(it.stock))
+        v_steam = row_input("Steam史低", f"{it.steam_lowest:.2f}")
+
+        row_level = ttk.Frame(win, padding=(12, 6))
+        row_level.pack(fill="x")
+        ttk.Label(row_level, text="等级", width=12).pack(side="left")
+        v_level = tk.StringVar(value=it.level)
+        ttk.Combobox(row_level, textvariable=v_level, values=LEVELS, state="readonly", width=22).pack(side="left")
+
+        def save():
+            try:
+                it.name = v_name.get().strip() or it.name
+                it.price = float(v_price.get().strip())
+                it.cost = float(v_cost.get().strip())
+                it.stock = int(float(v_stock.get().strip()))
+                it.steam_lowest = float(v_steam.get().strip())
+                lvl = v_level.get().strip() or it.level
+                it.level = lvl if lvl in LEVELS else it.level
+            except Exception as e:
+                messagebox.showerror("保存失败", str(e))
+                return
+            win.destroy()
+            self.refresh_preview()
+
+        btns = ttk.Frame(win, padding=12)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="保存", command=save).pack(side="left")
+        ttk.Button(btns, text="取消", command=win.destroy).pack(side="left", padx=8)
 
     def _online(self):
         try:
@@ -1726,13 +1789,11 @@ class PageConfig(ttk.Frame):
         self.v_d = tk.StringVar(value="0.95")
         self.v_q = tk.StringVar(value="60")
         self.v_ratio = tk.StringVar(value="80")
-        self.v_type = tk.StringVar(value="原福袋")
         self.v_cover = tk.StringVar(value="")
         self.v_bg = tk.StringVar(value="")
         self.v_ad = tk.StringVar(value="")
         self.v_remark = tk.StringVar(value="")
         self.v_notify_person = tk.StringVar(value="当前操作人")
-        self.v_my_cost = tk.StringVar(value="—")
         self.v_pred_profit = tk.StringVar(value="—")
 
         now = dt.datetime.now()
@@ -1746,6 +1807,8 @@ class PageConfig(ttk.Frame):
         self.v_lo = {k: tk.StringVar(value=str(DEFAULT_RANGE[k][0])) for k in LEVELS}
         self.v_hi = {k: tk.StringVar(value=str(DEFAULT_RANGE[k][1])) for k in LEVELS}
         self.v_exp = {k: tk.StringVar(value="—") for k in LEVELS}
+        self.expected_visible = False
+        self._expected_widgets: List[tk.Widget] = []
 
         self._build_basic(left)
         self._build_levels(right)
@@ -1826,7 +1889,6 @@ class PageConfig(ttk.Frame):
             self.v_d.set(f"{cfg.d:.2f}")
             self.v_q.set(str(int(round(cfg.q * 100))))
             self.v_ratio.set(str(int(round(cfg.price_ratio * 100))))
-            self.v_type.set(bag.bag_type or "原福袋")
             self.v_up_date.set(cfg.up_time.strftime("%Y-%m-%d %H:%M"))
             self.v_down_date.set(cfg.down_time.strftime("%Y-%m-%d %H:%M"))
             self.v_pity_on.set(bool(cfg.pity_on))
@@ -1843,13 +1905,14 @@ class PageConfig(ttk.Frame):
         else:
             if not self.v_name.get():
                 self.v_name.set(f"{dt.datetime.now():%Y%m%d} 福袋")
-            self.v_type.set(bag.bag_type or "原福袋")
             self.v_cover.set(bag.cover_path)
             self.v_bg.set(bag.bg_path)
             self.v_ad.set(bag.ad_path)
             self.v_remark.set(bag.remark)
 
         self._apply_readonly_state()
+        self.expected_visible = False
+        self._set_expected_visible(False)
         self.refresh_expected_cost()
         self.refresh_pred_profit()
         self.refresh_preview()
@@ -1872,11 +1935,48 @@ class PageConfig(ttk.Frame):
         self.btn_save_top.configure(state=("disabled" if self._readonly else "normal"))
         self.btn_back_top.configure(state="normal")
         self.btn_filter.configure(state=("disabled" if self._readonly else "normal"))
+        if hasattr(self, "btn_calc_expected"):
+            self.btn_calc_expected.configure(state=("disabled" if self._readonly else "normal"))
         self._refresh_manual_controls()
 
     def _refresh_manual_controls(self):
         # 旧版遗留：当前页面已无手动控制区，避免空调用报错
         return
+
+    def _set_expected_visible(self, visible: bool):
+        for w in self._expected_widgets:
+            if visible:
+                w.grid()
+            else:
+                w.grid_remove()
+
+    def _validate_cost_ranges(self, ranges: Dict[str, LevelRange]):
+        for upper, lower in zip(LEVELS, LEVELS[1:]):
+            if ranges[lower].hi > ranges[upper].lo:
+                raise ValueError(f"{LEVEL_NAME[lower]}成本上限不得超过{LEVEL_NAME[upper]}成本下限")
+
+    def on_calc_expected(self):
+        try:
+            pk_percent = {k: self._parse_float(self.v_p[k].get(), f"{LEVEL_NAME[k]}概率(%)", lo=0.0, hi=100.0) for k in LEVELS}
+            total = sum(pk_percent.values())
+            if abs(total - 100.0) > 1e-6:
+                messagebox.showerror("概率校验失败", "等级概率总和必须严格等于 100%。")
+                return
+            ranges = {}
+            for k in LEVELS:
+                lo = self._parse_int(self.v_lo[k].get(), f"{LEVEL_NAME[k]}成本下限", lo=0, hi=10_000_000)
+                hi = self._parse_int(self.v_hi[k].get(), f"{LEVEL_NAME[k]}成本上限", lo=0, hi=10_000_000)
+                if lo > hi:
+                    raise ValueError(f"{LEVEL_NAME[k]}成本范围不合法：下限不能大于上限")
+                ranges[k] = LevelRange(lo=lo, hi=hi)
+            self._validate_cost_ranges(ranges)
+        except Exception as e:
+            messagebox.showerror("输入错误", str(e))
+            return
+
+        self.expected_visible = True
+        self._set_expected_visible(True)
+        self.refresh_expected_cost()
 
     def _build_basic(self, parent):
         self._basic_entries = []
@@ -1896,7 +1996,6 @@ class PageConfig(ttk.Frame):
                 ttk.Label(r, text=hint, foreground="#9ca3af").pack(side="left", padx=8)
 
         row(base, "福袋名称（≤30字）", self.v_name)
-        row(base, "福袋类型", self.v_type)
         row(base, "单抽标价 P（元）", self.v_P)
         row(base, "十连折扣系数 d", self.v_d, "如 0.97=97折")
 
@@ -1978,7 +2077,9 @@ class PageConfig(ttk.Frame):
         header.pack(fill="x", pady=(0, 4))
         ttk.Label(header, text="等级", width=10).grid(row=0, column=0, sticky="w")
         ttk.Label(header, text="概率(%)", width=10).grid(row=0, column=1, sticky="w")
-        ttk.Label(header, text="预期成本", width=10).grid(row=0, column=2, sticky="w")
+        exp_label = ttk.Label(header, text="预期成本", width=10)
+        exp_label.grid(row=0, column=2, sticky="w")
+        self._expected_widgets.append(exp_label)
         ttk.Label(header, text="下限", width=8).grid(row=0, column=3, sticky="w")
         ttk.Label(header, text="~", width=2).grid(row=0, column=4, sticky="w")
         ttk.Label(header, text="上限", width=8).grid(row=0, column=5, sticky="w")
@@ -1991,7 +2092,9 @@ class PageConfig(ttk.Frame):
             e_p.grid(row=0, column=1, sticky="w")
             self._range_entries.append(e_p)
 
-            ttk.Label(r, textvariable=self.v_exp[lvl], width=10).grid(row=0, column=2, sticky="w")
+            exp_cell = ttk.Label(r, textvariable=self.v_exp[lvl], width=10)
+            exp_cell.grid(row=0, column=2, sticky="w")
+            self._expected_widgets.append(exp_cell)
 
             e_lo = ttk.Entry(r, textvariable=self.v_lo[lvl], width=6)
             e_hi = ttk.Entry(r, textvariable=self.v_hi[lvl], width=6)
@@ -1999,6 +2102,12 @@ class PageConfig(ttk.Frame):
             ttk.Label(r, text="~").grid(row=0, column=4, sticky="w")
             e_hi.grid(row=0, column=5, sticky="w")
             self._range_entries.extend([e_lo, e_hi])
+
+        action_row = ttk.Frame(box)
+        action_row.pack(fill="x", pady=(6, 0))
+        self.btn_calc_expected = ttk.Button(action_row, text="计算", command=self.on_calc_expected)
+        self.btn_calc_expected.pack(side="left")
+        ttk.Label(action_row, text="点击计算后显示预期成本", foreground="#6b7280").pack(side="left", padx=(8, 0))
 
         ttk.Label(box, text="库存筛选：库存需大于0，低库存可在选品页直接查看库存数。", foreground="#6b7280").pack(anchor="w", pady=(6,0))
 
@@ -2011,9 +2120,6 @@ class PageConfig(ttk.Frame):
         self.ent_X = ttk.Entry(rx, textvariable=self.v_X, width=18)
         self.ent_X.pack(side="left")
         self._range_entries.append(self.ent_X)
-
-        ttk.Label(box, text="我的预期成本", font=("Microsoft YaHei UI", 11, "bold")).pack(anchor="w", pady=(10, 4))
-        ttk.Label(box, textvariable=self.v_my_cost, foreground="#111827").pack(anchor="w")
 
         # 人工上下线控制已迁移到首页管理操作
 
@@ -2051,7 +2157,10 @@ class PageConfig(ttk.Frame):
             raise ValueError("下架时间必须晚于上架时间")
 
         pk_percent = {k: self._parse_float(self.v_p[k].get(), f"{LEVEL_NAME[k]}概率(%)", lo=0.0, hi=100.0) for k in LEVELS}
-        p_k = normalize_pk_percent(pk_percent)
+        total = sum(pk_percent.values())
+        if abs(total - 100.0) > 1e-6:
+            raise ValueError("等级概率总和必须严格等于 100%。")
+        p_k = {k: v / 100.0 for k, v in pk_percent.items()}
 
         ranges = {}
         for k in LEVELS:
@@ -2060,6 +2169,7 @@ class PageConfig(ttk.Frame):
             if lo > hi:
                 raise ValueError(f"{LEVEL_NAME[k]}成本范围不合法：下限不能大于上限")
             ranges[k] = LevelRange(lo=lo, hi=hi)
+        self._validate_cost_ranges(ranges)
 
         pity_on = bool(self.v_pity_on.get())
         X = None
@@ -2071,6 +2181,10 @@ class PageConfig(ttk.Frame):
         return Config(bag_name, P, g, d, q, ratio, up_time, down_time, pity_on, X, p_k, ranges, notify_person)
 
     def refresh_expected_cost(self):
+        if not self.expected_visible:
+            for k in LEVELS:
+                self.v_exp[k].set("—")
+            return
         try:
             cfg = self._build_config()
             mu = expected_cost_reference(cfg)
@@ -2078,11 +2192,9 @@ class PageConfig(ttk.Frame):
                 lo = int(self.v_lo[k].get() or 0)
                 hi = int(self.v_hi[k].get() or 0)
                 self.v_exp[k].set(f"{mu[k]:.0f}" if (lo <= mu[k] <= hi) else f"⚠ {mu[k]:.0f}")
-            P_eff = calc_p_eff(cfg.P, cfg.d, cfg.q)
-            c_target = calc_c_target(P_eff, cfg.g)
-            self.v_my_cost.set(f"{c_target:.2f} 元（目标成本线）")
         except Exception:
-            self.v_my_cost.set("—")
+            for k in LEVELS:
+                self.v_exp[k].set("—")
             return
 
     def refresh_pred_profit(self):
@@ -2198,7 +2310,6 @@ class PageConfig(ttk.Frame):
             return
         bag = self.app.ensure_current()
         bag.cfg = cfg
-        bag.bag_type = self.v_type.get().strip() or "原福袋"
         bag.cover_path = self.v_cover.get().strip()
         bag.bg_path = self.v_bg.get().strip()
         bag.ad_path = self.v_ad.get().strip()
@@ -2279,12 +2390,14 @@ class PagePick(ttk.Frame):
         top = ttk.Frame(self)
         top.pack(fill="x", pady=6)
 
+        self.v_level_all = tk.BooleanVar(value=True)
         self.level_vars = {k: tk.BooleanVar(value=True) for k in LEVELS}
         lvf = ttk.Frame(top)
         lvf.pack(side="left")
         ttk.Label(lvf, text="等级：").pack(side="left")
+        ttk.Checkbutton(lvf, text="全部", variable=self.v_level_all, command=self._toggle_level_all).pack(side="left", padx=(0, 6))
         for k in LEVELS:
-            ttk.Checkbutton(lvf, text=LEVEL_NAME[k], variable=self.level_vars[k], command=self.refresh).pack(side="left", padx=(0, 6))
+            ttk.Checkbutton(lvf, text=LEVEL_NAME[k], variable=self.level_vars[k], command=self._on_level_change).pack(side="left", padx=(0, 6))
 
         ttk.Label(top, text="搜索：").pack(side="right", padx=(6, 4))
         self.v_search = tk.StringVar(value="")
@@ -2298,7 +2411,6 @@ class PagePick(ttk.Frame):
         selected_box.pack(fill="x", pady=(6, 6))
 
         sel_cols = [
-            ("action", "操作", 80, "center"),
             ("id", "ID", 70, "center"),
             ("name", "游戏名", 200, "w"),
             ("version", "版本", 90, "center"),
@@ -2310,6 +2422,7 @@ class PagePick(ttk.Frame):
             ("cost", "成本", 90, "e"),
             ("disc", "折扣活动状态", 150, "center"),
             ("src", "来源", 80, "center"),
+            ("action", "操作", 80, "center"),
         ]
         self.sel_heading_labels = {c: t for c, t, *_ in sel_cols}
 
@@ -2331,7 +2444,6 @@ class PagePick(ttk.Frame):
         cand_box.pack(fill="both", expand=True, pady=(0, 6))
 
         cand_cols = [
-            ("action", "操作", 80, "center"),
             ("id", "ID", 70, "center"),
             ("name", "游戏名", 200, "w"),
             ("version", "版本", 90, "center"),
@@ -2343,6 +2455,7 @@ class PagePick(ttk.Frame):
             ("cost", "成本", 90, "e"),
             ("disc", "折扣活动状态", 150, "center"),
             ("src", "来源", 90, "center"),
+            ("action", "操作", 80, "center"),
         ]
         self.cand_heading_labels = {c: t for c, t, *_ in cand_cols}
 
@@ -2402,6 +2515,17 @@ class PagePick(ttk.Frame):
         if it.discount_end and it.discount_end <= now and it.id not in getattr(self.app.ensure_current(), "manual_added_ids", set()):
             return True
         return False
+
+    def _toggle_level_all(self):
+        target = bool(self.v_level_all.get())
+        for var in self.level_vars.values():
+            var.set(target)
+        self.refresh()
+
+    def _on_level_change(self):
+        all_on = all(var.get() for var in self.level_vars.values())
+        self.v_level_all.set(all_on)
+        self.refresh()
 
     def _toggle_sort(self, which: str, key: str):
         if which == "sel":
@@ -2505,8 +2629,8 @@ class PagePick(ttk.Frame):
             disc = self._disc_text(it, now)
             src = "手动添加" if it.id in bag.manual_added_ids else "系统筛选"
             self.tree_selected.insert("", "end", iid=str(it.id),
-                                      values=("移除", it.id, it.name, it.version or "-", it.stock_type or "通用", LEVEL_BADGE[it.level],
-                                              stock, f"{it.price:.2f}", f"{it.steam_lowest:.2f}", f"{it.cost:.2f}", disc, src))
+                                      values=(it.id, it.name, it.version or "-", it.stock_type or "通用", LEVEL_BADGE[it.level],
+                                              stock, f"{it.price:.2f}", f"{it.steam_lowest:.2f}", f"{it.cost:.2f}", disc, src, "移除"))
 
         # 候选列表（系统筛选 + 手动添加），系统筛选的过期商品不再展示，避免“全选后立即被剔除”
         shown = []
@@ -2538,8 +2662,8 @@ class PagePick(ttk.Frame):
             disc = self._disc_text(it, now)
             src = "手动添加" if it.id in bag.manual_added_ids else "系统筛选"
             self.tree.insert("", "end", iid=str(it.id),
-                             values=("选择", it.id, it.name, it.version or "-", it.stock_type or "通用", LEVEL_BADGE[it.level], stock,
-                                     f"{it.price:.2f}", f"{it.steam_lowest:.2f}", f"{it.cost:.2f}", disc, src))
+                             values=(it.id, it.name, it.version or "-", it.stock_type or "通用", LEVEL_BADGE[it.level], stock,
+                                     f"{it.price:.2f}", f"{it.steam_lowest:.2f}", f"{it.cost:.2f}", disc, src, "选择"))
 
         self.cand_info.configure(text=f"共 {cand_total} 条，{cand_pages} 页，当前第 {self.cand_page} 页")
         status_msg = f"候选显示：{len(cand_slice)} / {cand_total}｜已勾选：{len(bag.selected_ids)}"
@@ -2577,7 +2701,7 @@ class PagePick(ttk.Frame):
     def on_click_selected(self, event):
         row = self.tree_selected.identify_row(event.y)
         col = self.tree_selected.identify_column(event.x)
-        if not row or col != "#1":
+        if not row or col != "#12":
             return
         bag = self.app.ensure_current()
         it_id = int(row)
@@ -2593,7 +2717,7 @@ class PagePick(ttk.Frame):
     def on_click_candidate(self, event):
         row = self.tree.identify_row(event.y)
         col = self.tree.identify_column(event.x)
-        if not row or col != "#1":
+        if not row or col != "#12":
             return
         bag = self.app.ensure_current()
         it_id = int(row)
@@ -2721,7 +2845,6 @@ class PageResult(ttk.Frame):
 
         self.breadcrumb = ttk.Label(self, text="", foreground="#9ca3af")
         self.breadcrumb.pack(anchor="w")
-        ttk.Button(self, text="返回商品选品页", command=self.back_pick_only).place(relx=1.0, y=5, x=-10, anchor="ne")
 
         ttk.Label(self, text="结果与操作（最终决策）", font=("Microsoft YaHei UI", 16, "bold")).pack(anchor="w", pady=(0, 10))
         self.banner = tk.Label(self, text="", anchor="w", padx=12, pady=10, font=("Microsoft YaHei UI", 11, "bold"))
@@ -2744,7 +2867,10 @@ class PageResult(ttk.Frame):
 
         btns = ttk.Frame(self)
         btns.pack(fill="x", pady=10)
+        ttk.Button(btns, text="返回参数配置页面", command=self.back_config_only).pack(side="left")
+        ttk.Button(btns, text="返回商品选品页面", command=self.back_pick_only).pack(side="left", padx=6)
         ttk.Button(btns, text="查看当前配置", command=self.show_config_snapshot).pack(side="right", padx=6)
+        ttk.Button(btns, text="上架", command=self.online).pack(side="right", padx=6)
 
         self.note = ttk.Label(self, text="", foreground="#9ca3af")
         self.note.pack(anchor="w")
@@ -2854,6 +2980,11 @@ class PageResult(ttk.Frame):
     def back_pick_only(self):
         # 返回选品页，不重置已选商品或概率结果
         self.app.show("PagePick")
+
+    def back_config_only(self):
+        # 返回参数配置页，不重置已选商品或概率结果
+        self.app.frames["PageConfig"].set_readonly(False)
+        self.app.show("PageConfig")
 
 # -------------------------------
 # main
